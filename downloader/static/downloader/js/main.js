@@ -1059,7 +1059,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function triggerGoogleFlow() {
+  function triggerGoogleFlow(e) {
+    if (e && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
     const clientId = getGoogleClientId();
 
     if (!clientId) {
@@ -1079,22 +1082,25 @@ document.addEventListener('DOMContentLoaded', () => {
           callback: async (tokenResponse) => {
             if (tokenResponse && tokenResponse.access_token) {
               await sendGoogleTokenToBackend({ access_token: tokenResponse.access_token });
-            } else {
-              window.location.href = authUrl;
             }
           },
-          error_callback: () => {
-            window.location.href = authUrl;
+          error_callback: (err) => {
+            console.warn('Google TokenClient popup error:', err);
+            if (err && (err.type === 'popup_closed' || err.type === 'popup_blocked_by_browser')) {
+              window.location.href = authUrl;
+            }
           }
         });
         tokenClient.requestAccessToken({ prompt: 'select_account' });
+        return;
       } catch (e) {
-        window.location.href = authUrl;
+        console.error('GIS init error:', e);
       }
-    } else {
-      window.location.href = authUrl;
     }
+
+    window.location.href = authUrl;
   }
+
 
   if (btnGoogleSignIn) {
     btnGoogleSignIn.addEventListener('click', triggerGoogleFlow);
