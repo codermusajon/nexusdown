@@ -1085,9 +1085,10 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           },
           error_callback: (err) => {
-            console.warn('Google TokenClient popup error:', err);
-            if (err && (err.type === 'popup_closed' || err.type === 'popup_blocked_by_browser')) {
-              window.location.href = authUrl;
+            console.warn('Google OAuth error:', err);
+            if (err && err.type === 'popup_blocked_by_browser') {
+              showToast('Brauzeringiz qalqib chiquvchi oyna (popup) ni blokladi. Google sahifasiga o\'tilmoqda...', 'info');
+              setTimeout(() => { window.location.href = authUrl; }, 1000);
             }
           }
         });
@@ -1100,6 +1101,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     window.location.href = authUrl;
   }
+
 
 
   if (btnGoogleSignIn) {
