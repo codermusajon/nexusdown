@@ -1071,32 +1071,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const scope = encodeURIComponent('email profile openid');
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${scope}&prompt=select_account`;
 
-    if (window.google && google.accounts && google.accounts.oauth2) {
-      try {
-        const tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: clientId,
-          scope: 'email profile openid',
-          callback: async (tokenResponse) => {
-            if (tokenResponse && tokenResponse.access_token) {
-              await sendGoogleTokenToBackend({ access_token: tokenResponse.access_token });
-            } else {
-              window.location.href = authUrl;
-            }
-          },
-          error_callback: (err) => {
-            console.warn('Google OAuth popup error, falling back to direct redirect:', err);
-            window.location.href = authUrl;
-          }
-        });
-        tokenClient.requestAccessToken({ prompt: 'select_account' });
-        return;
-      } catch (e) {
-        console.error('GIS init error:', e);
-      }
-    }
-
+    // Direct single-tab redirect: 100% reliable, zero popups, zero double-window conflicts
     window.location.href = authUrl;
   }
+
 
 
 
