@@ -1,0 +1,646 @@
+{% load static tz %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0a0d14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>NexusDown - Universal Media & Fayl Yuklovchi</title>
+
+  <!-- Favicon -->
+  <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+  <link rel="alternate icon" href="{% static 'newlogo.png' %}" type="image/png">
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+
+  <!-- Google Client ID Meta -->
+  <meta name="google-client-id" content="{{ google_client_id }}">
+
+  <!-- Google Identity Services (GIS) SDK -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}">
+</head>
+<body>
+
+  <!-- Ambient Glow Effects -->
+  <div class="bg-glow-sphere-1"></div>
+  <div class="bg-glow-sphere-2"></div>
+  <div class="grid-overlay"></div>
+
+  <!-- CSRF Token -->
+  {% csrf_token %}
+
+  <!-- Application Header -->
+  <header class="app-header">
+    <div class="header-container">
+      <a href="/" class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <span class="brand-title">NexusDown</span>
+      </a>
+      <a href="#adminSection" class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </div>
+        <span class="brand-title">Admin Info</span>
+      </a>
+
+      <!-- Daily Search Limit Counter Pill -->
+      <div id="searchLimitBadge" class="search-limit-pill" title="Bugungi qidiruvlar soni">
+        <span id="searchLimitIcon">🔍</span>
+        <span id="searchLimitText">Qidiruv: {{ quota_info.searches_today }}/{{ quota_info.limit|default:'∞' }}</span>
+      </div>
+
+      {% if user.is_staff or user.is_superuser %}
+      <a href="{% url 'downloader:admin_dashboard' %}" class="brand" style="margin-left: 10px;">
+        <div class="brand-icon" style="background: rgba(245, 158, 11, 0.2); color: #f59e0b;">
+          🛡️
+        </div>
+        <span class="brand-title" style="font-size: 0.9rem; color: #f59e0b;">Admin Panel</span>
+      </a>
+      {% endif %}
+
+
+      <!-- Google Auth Container -->
+      <div class="user-auth-wrapper" id="userAuthWrapper">
+        <div id="gAuthUnauth" class="auth-state-unauth" {% if user.is_authenticated %}style="display: none;"{% endif %}>
+          <a href="{% url 'downloader:login' %}" class="btn-nav-login">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+              <polyline points="10 17 15 12 10 7"></polyline>
+              <line x1="15" y1="12" x2="3" y2="12"></line>
+            </svg>
+            <span>Kirish</span>
+          </a>
+          <a href="{% url 'downloader:signup' %}" class="btn-nav-signup">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="8.5" cy="7" r="4"></circle>
+              <line x1="20" y1="8" x2="20" y2="14"></line>
+              <line x1="23" y1="11" x2="17" y2="11"></line>
+            </svg>
+            <span>Ro'yxatdan o'tish</span>
+          </a>
+          <button id="btnGoogleSignIn" class="btn-google-auth" type="button" title="Google orqali kirish">
+            <svg width="18" height="18" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+            </svg>
+          </button>
+        </div>
+
+        <div id="gAuthAuth" class="auth-state-auth" {% if not user.is_authenticated %}style="display: none;"{% endif %}>
+          <div class="user-profile-badge">
+            <img id="userAvatar" src="{{ request.session.user_avatar|default:'' }}" alt="Avatar" class="user-avatar" />
+            <div class="user-info-text">
+              <span id="userName" class="user-name">{{ user.get_full_name|default:user.username }}</span>
+              <span id="userEmail" class="user-email">{{ user.email }}</span>
+            </div>
+            <button id="btnLogout" class="btn-logout" title="Chiqish" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="badge-live">
+        <div class="pulse-dot"></div>
+        <span class="badge-text">Django 6 Engine</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-wrapper">
+    
+    <!-- Hero Section -->
+    <section class="hero-section">
+      <h1 class="hero-title">Tezkor <span>Media & Fayl</span> Yuklovchi</h1>
+      <p class="hero-subtitle">Tezkor video stream URL, audio-link, rasmlarni yuklab olish.</p>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <div class="nav-tabs-wrapper">
+      <div class="nav-tabs">
+        <button class="nav-tab-btn active" data-tab="tab-media">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="23 7 16 12 23 17 23 7"/>
+            <rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+          </svg>
+          Media linkini chiqazish
+        </button>
+        <button class="nav-tab-btn" data-tab="tab-converter">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+          Rasmni PDF ga 
+        </button>
+      </div>
+    </div>
+
+    <!-- TAB 1: Media & Video Extractor -->
+    <div class="tab-pane" id="tab-media" style="display: block;">
+      <div class="glass-card">
+        <div class="url-input-container">
+          <div class="url-input-box">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <input type="url" id="mediaUrlInput" class="url-input" placeholder="YouTube, Instagram, TikTok video url..." autocomplete="off">
+            <button id="btnPasteMediaUrl" class="btn-paste-input" type="button" title="Vaqtincha xotiradan qo'yish">
+              📋 Paste
+            </button>
+          </div>
+          <button id="btnInspect" class="btn-inspect">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <span>Qidirish</span>
+          </button>
+        </div>
+
+        <!-- Supported Platform Badges -->
+        <div class="platform-pills">
+          <span class="platform-pill">🎬 YouTube</span>
+          <span class="platform-pill">📸 Instagram</span>
+          <span class="platform-pill">🎵 TikTok</span>
+          <!-- <span class="platform-pill">📹 Vimeo</span>
+          <span class="platform-pill">🎧 SoundCloud</span> -->
+        </div>
+
+        <!-- Banned Site VPN Recommendation Caution Banner -->
+        <div class="banned-site-caution-box">
+          <span class="caution-icon">⚠️</span>
+          <span><strong>Ogohlantirish:</strong> Ba'zi bir saytlar bloklangan bo'lishi mumkin, VPN dan foydalanish tavsiya etiladi.</span>
+        </div>
+
+        <!-- Media Inspection Result Card (Videos / Single Stream) -->
+        <div id="mediaPreviewCard" class="media-preview-card">
+          <div class="media-preview-grid">
+            <div class="media-thumbnail-box">
+              <img id="mediaThumbnail" src="" alt="Thumbnail" class="media-thumbnail-img">
+              <video id="mediaVideoPlayer" controls class="media-thumbnail-video" style="display: none;"></video>
+              <button id="btnPlayMediaVideo" class="btn-play-overlay" type="button" title="Videoni ko'rish" style="display: none;">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              </button>
+              <div id="mediaDuration" class="media-duration-badge">00:00</div>
+            </div>
+
+            <div class="media-meta-info">
+              <h3 id="mediaTitle" class="media-meta-title">Media Sarlavhasi yuklanmoqda...</h3>
+              <p id="mediaAuthor" class="media-meta-author">Avtor</p>
+
+              <div class="format-selection-group">
+                <div class="format-label">Chiqazilgan media linklar</div>
+                <div id="formatOptionsGrid" class="format-options-grid">
+                  <!-- Format options will be dynamically injected here -->
+                </div>
+              </div>
+
+              <!-- Direct Link Box (Shows when format is selected) -->
+              <div id="directLinkContainer" class="direct-link-container" style="display: none;">
+                <div class="format-label direct-link-header">
+                  <span>🔗 Chiqazilgan media link</span>
+                  <span id="selectedFormatLabel" class="selected-format-badge"></span>
+                </div>
+                <div class="direct-link-controls">
+                  <input type="text" id="directLinkInput" readonly class="direct-link-input" placeholder="Direct media link...">
+                  <div class="direct-link-buttons">
+                    <button id="btnCopyDirectLink" class="btn-file-dl btn-copy-link" type="button">📋 Nusxalash</button>
+                    <a id="btnOpenDirectLink" href="#" target="_blank" rel="noopener noreferrer" download class="btn-file-dl btn-open-link">⬇ Ochish</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Photo Gallery Section (Visual grid for Instagram photos & carousels) -->
+        <div id="photoGallerySection" class="photo-gallery-section" style="display: none;">
+          <div class="photo-gallery-header">
+            <h3 class="photo-gallery-title">
+              📸 Topilgan Rasmlar (<span id="photoGalleryCount">0</span> ta)
+            </h3>
+            <span class="photo-gallery-subtitle">Har bir rasmni to'liq ko'rish va yuklab olishingiz mumkin</span>
+          </div>
+
+          <div id="photoGalleryGrid" class="photo-gallery-grid">
+            <!-- Dynamic Photo Cards injected here -->
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- TAB 2: Direct Link Downloader -->
+    <div class="tab-pane" id="tab-direct" style="display: none;">
+      <div class="glass-card">
+        <h3 class="card-section-title">Fayl Yuklab Olish</h3>
+        <p class="card-section-desc">Fayllarni yuklash uchun manzil:</p>
+        
+        <div class="url-input-container">
+          <div class="url-input-box">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="input-icon">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <input type="url" id="directUrlInput" class="url-input" placeholder="https://example.com/file.zip or document.pdf">
+            <button id="btnPasteDirectUrl" class="btn-paste-input" type="button" title="Vaqtincha xotiradan qo'yish">
+              📋 Paste
+            </button>
+          </div>
+          <button id="btnDirectDownload" class="btn-inspect">
+            <span>Faylni Yuklab Olish</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Image to PDF Converter -->
+    <div class="tab-pane" id="tab-converter" style="display: none;">
+      <div class="glass-card converter-main-card">
+        <div class="converter-header-block">
+          <h3 class="card-section-title">🖼️ Rasmlarni PDF ga va Boshqa Formatlarga O'tkazish</h3>
+          <p class="card-section-desc">JPG, PNG, WebP rasmlarni bitta PDF hujjatiga aylantiring, tartiblang, burang va moslashtiring.</p>
+        </div>
+
+        <!-- Settings & Options Panel -->
+        <div class="converter-options-panel">
+          <div class="options-group-row">
+            <!-- Format Select -->
+            <div class="option-field">
+              <label class="option-label" for="targetFormatSelect">🎯 Maqsadli Format</label>
+              <select id="targetFormatSelect" class="converter-select">
+                <option value="pdf">📄 Single PDF Document</option>
+                <option value="png">🖼️ PNG Images</option>
+                <option value="jpeg">🖼️ JPG Images</option>
+                <option value="webp">🖼️ WebP Images</option>
+              </select>
+            </div>
+
+            <!-- Page Size (PDF only) -->
+            <div class="option-field pdf-only-option">
+              <label class="option-label" for="pageSizeSelect">📐 Sahifa O'lchami</label>
+              <select id="pageSizeSelect" class="converter-select">
+                <option value="a4" selected>A4 (210 × 297 mm)</option>
+                <option value="letter">Letter (8.5 × 11 in)</option>
+                <option value="legal">Legal (8.5 × 14 in)</option>
+                <option value="fit">Fit to Image (Rasm o'lchami)</option>
+              </select>
+            </div>
+
+            <!-- Orientation (PDF only) -->
+            <div class="option-field pdf-only-option">
+              <label class="option-label">🔄 Sahifa Yo'nalishi</label>
+              <div class="btn-toggle-group" id="orientationToggleGroup">
+                <button type="button" class="btn-toggle-pill active" data-ori="auto">Avto</button>
+                <button type="button" class="btn-toggle-pill" data-ori="portrait">Tik (Portrait)</button>
+                <button type="button" class="btn-toggle-pill" data-ori="landscape">Yotiq (Landscape)</button>
+              </div>
+              <input type="hidden" id="orientationInput" value="auto">
+            </div>
+
+            <!-- Margin (PDF only) -->
+            <div class="option-field pdf-only-option">
+              <label class="option-label" for="marginSelect">🖼️ Sahifa Hoshiyasi (Margin)</label>
+              <select id="marginSelect" class="converter-select">
+                <option value="0" selected>Hoshiyasiz (0 mm)</option>
+                <option value="5">Kichik (5 mm)</option>
+                <option value="10">O'rtacha (10 mm)</option>
+                <option value="20">Katta (20 mm)</option>
+              </select>
+            </div>
+
+            <!-- Quality / Compression -->
+            <div class="option-field">
+              <label class="option-label" for="qualitySelect">⚡ Sifat & Siqish</label>
+              <select id="qualitySelect" class="converter-select">
+                <option value="90" selected>Yuqori Sifat (90%)</option>
+                <option value="100">Original / Maksimal (100%)</option>
+                <option value="75">O'rtacha (75%)</option>
+                <option value="50">Kichik hajm (50%)</option>
+              </select>
+            </div>
+
+            <!-- Output Mode -->
+            <div class="option-field">
+              <label class="option-label" for="outputModeSelect">📦 Saqlash Rejimi</label>
+              <select id="outputModeSelect" class="converter-select">
+                <option value="single_pdf" selected>Bitta Birlashgan PDF (Single PDF)</option>
+                <option value="zip">Alohida Fayllar (ZIP Arxiv)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Extra Toggles (Page Numbers) -->
+          <div class="options-extra-row pdf-only-option">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chkPageNumbers" class="converter-checkbox">
+              <span>Sahifa raqamlarini pastda ko'rsatish (Page 1 of N)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Dropzone Area -->
+        <div id="dropzone" class="dropzone">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          <h4 class="dropzone-title">Rasmlarni bu yerga tashlang yoki bosing</h4>
+          <p class="dropzone-sub">PNG, JPG, JPEG, WEBP formatlarini yuklang. Bir nechta rasmni tanlashingiz mumkin.</p>
+          <input type="file" id="imageFileInput" multiple accept="image/*" style="display: none;">
+        </div>
+
+        <!-- Batch Manager Toolbar & Image Grid Container (Shows when images uploaded) -->
+        <div id="converterManagerSection" class="converter-manager-section" style="display: none;">
+          <div class="converter-manager-header">
+            <div class="manager-title-box">
+              <h4 class="manager-title">Yuklangan Rasmlar (<span id="imageCardsCount">0</span>)</h4>
+              <span class="manager-sub">Rasmlar ketma-ketligini o'zgartirish uchun suring yoki tugmalardan foydalaning</span>
+            </div>
+
+            <div class="manager-toolbar-actions">
+              <button type="button" id="btnAddMoreImages" class="btn-manager-act btn-add-more">
+                ➕ Yana Rasm Qo'shish
+              </button>
+              <button type="button" id="btnRotateAllImages" class="btn-manager-act">
+                🔄 Hammasini Burish (90°)
+              </button>
+              <button type="button" id="btnSortByName" class="btn-manager-act">
+                🔤 Nomi Bo'yicha Tartiblash
+              </button>
+              <button type="button" id="btnClearAllImages" class="btn-manager-act btn-clear-all">
+                🗑️ Hammasini O'chirish
+              </button>
+            </div>
+          </div>
+
+          <!-- Thumbnail Cards Grid -->
+          <div id="imageCardsGrid" class="image-cards-grid">
+            <!-- Dynamic Image Cards Injected Here -->
+          </div>
+        </div>
+
+        <!-- Action Button -->
+        <div class="converter-bottom-actions">
+          <button id="btnConvertImages" class="btn-inspect btn-convert-act" style="display: none;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <path d="M12 18v-6"/>
+              <path d="M9 15l3 3 3-3"/>
+            </svg>
+            <span id="btnConvertText">Formatga O'tkazish va Yuklab Olish</span>
+          </button>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- History Section -->
+    <section class="history-section">
+      <div class="history-header">
+        <h2 class="history-title">Yaqinda Yuklanganlar</h2>
+        <div class="history-actions-header">
+          <button id="btnClearHistory" style="cursor: pointer;" class="btn-file-dl btn-clear-act" type="button" title="Tarixni tozalash">
+            🗑️ Tarixni Tozalash
+          </button>
+          <button id="btnRefreshHistory" class="btn-file-dl btn-refresh-act" type="button" title="Yangilash">
+            🔄 Yangilash
+          </button>
+        </div>
+      </div>
+
+      <div class="history-table-wrapper">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Sarlavha & Sana</th>
+              <th>Turi</th>
+              <th>Format</th>
+              <th>Harakat</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            {% for item in recent_downloads %}
+            <tr>
+              <td data-label="Sarlavha & Sana">
+                <strong class="item-title">{{ item.title }}</strong>
+                <div class="item-date">{{ item.created_at|timezone:"Asia/Tashkent"|date:"M d, H:i" }}</div>
+              </td>
+              <td data-label="Turi"><span class="badge-type {{ item.media_type }}">{{ item.media_type }}</span></td>
+              <td data-label="Format">{{ item.format_label }}</td>
+              <td data-label="Harakat">
+                <div class="history-row-actions">
+                  {% if item.download_url %}
+                  <a href="{{ item.download_url }}" target="_blank" rel="noopener noreferrer" class="btn-file-dl">📥 Yuklab olish</a>
+                  {% endif %}
+                  <button class="btn-delete-row" data-id="{{ item.id }}" type="button" title="O'chirish">
+                    🗑️
+                  </button>
+                </div>
+              </td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="4" class="empty-history-cell">
+                Hech qanday yuklanma topilmadi. Boshlash uchun yuqoridagi manzilni tekshiring!
+              </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Admin Info Section -->
+    <section class="admin-info-section" id="adminSection">
+      <div class="glass-card admin-info-card">
+        <div class="admin-info-header" style="display: flex; align-items: center; gap: 14px;">
+          <div class="brand-icon" style="width: 42px; height: 42px; flex-shrink: 0;">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+              <circle cx="12" cy="7" r="4"/>
+            </svg>
+          </div>
+          <div class="admin-title-meta">
+            <h3 class="brand-title" style="font-size: 1.35rem; margin: 0;">Admin Haqida Ma'lumot</h3>
+            <span class="admin-status-badge" style="display: flex; align-items: center; gap: 6px;">
+              <span class="pulse-dot"></span> Administrator
+            </span>
+          </div>
+        </div>
+
+        <div class="admin-details-grid">
+          <div class="admin-detail-item" style="display: flex; align-items: center; gap: 14px;">
+            <div class="brand-icon" style="width: 36px; height: 36px; flex-shrink: 0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+              </svg>
+            </div>
+            <div class="admin-detail-content" style="display: flex; flex-direction: column; gap: 2px;">
+              <span class="admin-detail-label">Ismi</span>
+              <span class="admin-detail-value">Ismoiljon</span>
+            </div>
+          </div>
+
+          <div class="admin-detail-item" style="display: flex; align-items: center; gap: 14px;">
+            <div class="brand-icon" style="width: 36px; height: 36px; flex-shrink: 0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="8.5" cy="7" r="4"/>
+                <polyline points="17 11 19 13 23 9"/>
+              </svg>
+            </div>
+            <div class="admin-detail-content" style="display: flex; flex-direction: column; gap: 2px;">
+              <span class="admin-detail-label">Familiyasi</span>
+              <span class="admin-detail-value">Vahobov</span>
+            </div>
+          </div>
+
+          <div class="admin-detail-item" style="display: flex; align-items: center; gap: 14px;">
+            <div class="brand-icon" style="width: 36px; height: 36px; flex-shrink: 0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                <line x1="16" y1="2" x2="16" y2="6"/>
+                <line x1="8" y1="2" x2="8" y2="6"/>
+                <line x1="3" y1="10" x2="21" y2="10"/>
+              </svg>
+            </div>
+            <div class="admin-detail-content" style="display: flex; flex-direction: column; gap: 2px;">
+              <span class="admin-detail-label">Yoshi</span>
+              <span class="admin-detail-value">{{ current_year }}da</span>
+            </div>
+          </div>
+
+          <div class="admin-detail-item admin-telegram-item" style="display: flex; align-items: center; gap: 14px;">
+            <div class="brand-icon" style="width: 36px; height: 36px; flex-shrink: 0;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/>
+              </svg>
+            </div>
+            <div class="admin-detail-content" style="display: flex; flex-direction: column; gap: 2px;">
+              <span class="admin-detail-label">Telegram</span>
+              <a href="https://t.me/coder_ismoil" target="_blank" rel="noopener noreferrer" class="admin-telegram-link">
+                <span>@coder_ismoil</span>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="app-footer">
+    NexusDown Media Engine • Built with Django 6 & yt-dlp
+  </footer>
+
+
+  <!-- POPUP MODAL 1: Unregistered Daily Limit Reached (2/2) -->
+  <div id="modalUnregisteredLimit" class="popup-modal-overlay" style="display: none;">
+    <div class="popup-modal-card">
+      <button class="popup-modal-close" onclick="closeModal('modalUnregisteredLimit')">✕</button>
+      <div class="popup-modal-icon">🔒</div>
+      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi (2/2)</h2>
+      <p class="popup-modal-sub">
+        Ro'yxatdan o'tmagan foydalanuvchilar kuniga <strong>2 marta</strong> qidirishlari mumkin.
+        <br><br>
+        Ro'yxatdan o'ting va <strong>kuniga 10 ta tekin qidiruv</strong> imkoniyatiga ega bo'ling!
+      </p>
+      <div class="popup-modal-actions">
+        <a href="{% url 'downloader:signup' %}" class="btn-popup-primary">🚀 Ro'yxatdan o'tish</a>
+        <a href="{% url 'downloader:login' %}" class="btn-popup-secondary">🔑 Kirish</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- POPUP MODAL 2: Registered Daily Limit Reached (10/10) -->
+  <div id="modalRegisteredLimit" class="popup-modal-overlay" style="display: none;">
+    <div class="popup-modal-card">
+      <button class="popup-modal-close" onclick="closeModal('modalRegisteredLimit')">✕</button>
+      <div class="popup-modal-icon">👑</div>
+      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi (10/10)</h2>
+      <p class="popup-modal-sub">
+        Ro'yxatdan o'tgan foydalanuvchilar uchun ajratilgan kunlik <strong>10 ta qidiruv</strong> tugadi.
+        <br><br>
+        <strong>Cheksiz qidiruvlar</strong> va <strong>4K/2K sifatda yuklab olish</strong> uchun Premium maqomiga o'ting!
+      </p>
+      <div class="telegram-contact-box">
+        <div class="telegram-icon">💬</div>
+        <div class="telegram-text">
+          <span>Premium olish uchun Telegram-dan yozing:</span>
+          <strong>@coder_ismoil</strong>
+        </div>
+      </div>
+      <div class="popup-modal-actions">
+        <a href="https://t.me/coder_ismoil" target="_blank" rel="noopener noreferrer" class="btn-popup-telegram">
+          ✈️ Telegram orqali Bog'lanish (@coder_ismoil)
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- POPUP MODAL 3: High Resolution Locked (>1080p for Premium Only) -->
+  <div id="modalPremiumResolution" class="popup-modal-overlay" style="display: none;">
+    <div class="popup-modal-card">
+      <button class="popup-modal-close" onclick="closeModal('modalPremiumResolution')">✕</button>
+      <div class="popup-modal-icon">🎬</div>
+      <h2 class="popup-modal-title">Yuqori Sifat (2K / 4K / 8K) - FAQAT PREMIUM</h2>
+      <p class="popup-modal-sub">
+        <strong>1080p-dan yuqori (1440p, 4K, 8K)</strong> formatdagi videolarni yuklab olish faqat <strong>PREMIUM</strong> foydalanuvchilar uchun ochiq.
+        <br><br>
+        Premium maqomini olish uchun admin bilan bog'laning.
+      </p>
+      <div class="telegram-contact-box">
+        <div class="telegram-icon">💬</div>
+        <div class="telegram-text">
+          <span>Admin Telegram manzili:</span>
+          <strong>@coder_ismoil</strong>
+        </div>
+      </div>
+      <div class="popup-modal-actions">
+        <a href="https://t.me/coder_ismoil" target="_blank" rel="noopener noreferrer" class="btn-popup-telegram">
+          ✈️ Premium Olish (@coder_ismoil)
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Script -->
+  <script src="{% static 'downloader/js/main.js' %}?v=4.1"></script>
+</body>
+</html>
+
+

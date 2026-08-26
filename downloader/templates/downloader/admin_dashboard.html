@@ -1,0 +1,422 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NexusDown - Admin Dashboard</title>
+  <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}">
+  <style>
+    .admin-dashboard-wrapper {
+      max-width: 1200px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-bottom: 35px;
+    }
+    .stat-card {
+      background: rgba(15, 23, 42, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 22px;
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .stat-card:hover {
+      transform: translateY(-3px);
+      border-color: rgba(0, 242, 254, 0.4);
+    }
+    .stat-label {
+      font-size: 0.85rem;
+      color: #94a3b8;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-value {
+      font-size: 2.2rem;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 800;
+      background: linear-gradient(135deg, #ffffff 0%, #00f2fe 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .stat-value.gold {
+      background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .admin-tabs {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 25px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 12px;
+    }
+    .admin-tab-btn {
+      background: transparent;
+      border: none;
+      color: #94a3b8;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 10px 20px;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .admin-tab-btn.active {
+      background: rgba(0, 242, 254, 0.15);
+      color: #00f2fe;
+      border: 1px solid rgba(0, 242, 254, 0.3);
+    }
+
+    .admin-table-card {
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 24px;
+      backdrop-filter: blur(12px);
+    }
+    .admin-table-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+      gap: 15px;
+    }
+    .admin-search-input {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 10px 16px;
+      color: #fff;
+      font-size: 0.9rem;
+      width: 280px;
+    }
+    .admin-search-input:focus {
+      outline: none;
+      border-color: #00f2fe;
+    }
+
+    .badge-premium {
+      background: linear-gradient(135deg, #f59e0b, #d97706);
+      color: #fff;
+      font-size: 0.75rem;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 20px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .badge-free {
+      background: rgba(255, 255, 255, 0.1);
+      color: #94a3b8;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 20px;
+    }
+    .btn-act-premium {
+      background: rgba(16, 185, 129, 0.2);
+      color: #10b981;
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-act-premium:hover {
+      background: #10b981;
+      color: #fff;
+    }
+    .btn-act-revoke {
+      background: rgba(239, 68, 68, 0.2);
+      color: #ef4444;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+    .btn-act-revoke:hover {
+      background: #ef4444;
+      color: #fff;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Ambient Glow Effects -->
+  <div class="bg-glow-sphere-1"></div>
+  <div class="bg-glow-sphere-2"></div>
+  {% csrf_token %}
+
+  <header class="app-header">
+    <div class="header-container">
+      <a href="/" class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+        </div>
+        <span class="brand-title">NexusDown Admin</span>
+      </a>
+      <a href="/" class="btn-nav-login">
+        ← Bosh Sahifaga Qaytish
+      </a>
+    </div>
+  </header>
+
+  <main class="admin-dashboard-wrapper">
+    
+    <div style="margin-bottom: 25px;">
+      <h1 class="hero-title" style="font-size: 2.2rem; text-align: left; margin-bottom: 8px;">
+        Boshqaruv <span>Paneli</span>
+      </h1>
+      <p style="color: #94a3b8;">Foydalanuvchilar, Premium obunalar va yuklanmalar tarixini boshqarish</p>
+    </div>
+
+    <!-- Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <span class="stat-label">Jami Foydalanuvchilar</span>
+        <span class="stat-value" id="statTotalUsers">{{ total_users }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Bugun Ro'yxatdan O'tgan</span>
+        <span class="stat-value" id="statTodayUsers">{{ today_users }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Premium Foydalanuvchilar</span>
+        <span class="stat-value gold" id="statPremiumUsers">{{ premium_users_count }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">Jami Yuklanmalar</span>
+        <span class="stat-value" id="statTotalDownloads">{{ total_downloads }}</span>
+      </div>
+    </div>
+
+    <!-- Admin Navigation Tabs -->
+    <div class="admin-tabs">
+      <button class="admin-tab-btn active" data-tab="tab-users">👥 Foydalanuvchilar Boshqaruvi</button>
+      <button class="admin-tab-btn" data-tab="tab-history">📜 Barcha Yuklanmalar Tarixi</button>
+    </div>
+
+    <!-- TAB 1: Users Management -->
+    <div class="admin-pane" id="tab-users" style="display: block;">
+      <div class="admin-table-card">
+        <div class="admin-table-header">
+          <h3 style="margin: 0; font-size: 1.2rem; color: #fff;">Foydalanuvchilar Ro'yxati</h3>
+          <input type="text" id="userSearchInput" class="admin-search-input" placeholder="Ism, email yoki username bo'yicha..." autocomplete="off">
+        </div>
+
+        <div class="history-table-wrapper">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Foydalanuvchi</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Bugungi Qidiruvlar</th>
+                <th>Jami Yuklanmalar</th>
+                <th>Ro'yxatdan O'tgan</th>
+                <th>Harakat (Premium)</th>
+              </tr>
+            </thead>
+            <tbody id="usersTableBody">
+              <tr>
+                <td colspan="7" style="text-align: center; color: #94a3b8; padding: 30px;">Yuklanmoqda...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: Global Download History -->
+    <div class="admin-pane" id="tab-history" style="display: none;">
+      <div class="admin-table-card">
+        <div class="admin-table-header">
+          <h3 style="margin: 0; font-size: 1.2rem; color: #fff;">Barcha Qidiruv va Yuklanmalar Logs</h3>
+          <input type="text" id="historySearchInput" class="admin-search-input" placeholder="Sarlavha, IP yoki foydalanuvchi bo'yicha..." autocomplete="off">
+        </div>
+
+        <div class="history-table-wrapper">
+          <table class="history-table">
+            <thead>
+              <tr>
+                <th>Sarlavha & Sana</th>
+                <th>Foydalanuvchi ID / IP</th>
+                <th>Turi</th>
+                <th>Format</th>
+                <th>Manzil</th>
+              </tr>
+            </thead>
+            <tbody id="globalHistoryTableBody">
+              <tr>
+                <td colspan="5" style="text-align: center; color: #94a3b8; padding: 30px;">Yuklanmoqda...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]')?.value || '';
+      const adminTabs = document.querySelectorAll('.admin-tab-btn');
+      const adminPanes = document.querySelectorAll('.admin-pane');
+
+      adminTabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          adminTabs.forEach(t => t.classList.remove('active'));
+          adminPanes.forEach(p => p.style.display = 'none');
+
+          tab.classList.add('active');
+          const target = tab.getAttribute('data-tab');
+          document.getElementById(target).style.display = 'block';
+        });
+      });
+
+      // Load Users
+      async function loadUsers() {
+        try {
+          const res = await fetch('/api/admin/users/');
+          const data = await res.json();
+          renderUsersTable(data.users || []);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function renderUsersTable(users) {
+        const tbody = document.getElementById('usersTableBody');
+        const query = document.getElementById('userSearchInput').value.toLowerCase().trim();
+        
+        const filtered = users.filter(u => 
+          u.username.toLowerCase().includes(query) || 
+          u.email.toLowerCase().includes(query) || 
+          u.name.toLowerCase().includes(query)
+        );
+
+        if (!filtered.length) {
+          tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; color:#94a3b8; padding:30px;">Foydalanuvchi topilmadi.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = filtered.map(u => `
+          <tr>
+            <td>
+              <strong class="item-title">${u.name}</strong>
+              <div class="item-date">@${u.username} ${u.is_staff ? '⭐ (Admin)' : ''}</div>
+            </td>
+            <td>${u.email}</td>
+            <td>
+              ${u.is_premium 
+                ? `<span class="badge-premium">👑PREMIUM ${u.premium_expires_at ? '('+u.premium_expires_at+')' : ''}</span>`
+                : `<span class="badge-free">BEPUL</span>`}
+            </td>
+            <td><strong>${u.search_count_today}</strong> ta</td>
+            <td><strong>${u.total_downloads}</strong> ta</td>
+            <td><div class="item-date">${u.date_joined}</div></td>
+            <td>
+              ${u.is_premium 
+                ? `<button class="btn-act-revoke" onclick="togglePremium(${u.id}, false)">🔴 Bekor Qilish</button>`
+                : `<button class="btn-act-premium" onclick="togglePremium(${u.id}, true)">🟢 Premium Berish</button>`}
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      window.togglePremium = async (userId, isPremium) => {
+        try {
+          const res = await fetch('/api/admin/toggle-premium/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': csrfToken
+            },
+            body: JSON.stringify({ user_id: userId, is_premium: isPremium, days: 30 })
+          });
+          const data = await res.json();
+          if (data.status === 'success') {
+            loadUsers();
+          } else {
+            alert(data.error || 'Xatolik yuz berdi');
+          }
+        } catch (e) {
+          alert('Server xatosi');
+        }
+      };
+
+      document.getElementById('userSearchInput').addEventListener('input', loadUsers);
+
+      // Load History
+      async function loadHistory() {
+        const query = document.getElementById('historySearchInput').value.trim();
+        try {
+          const res = await fetch(`/api/admin/history/?query=${encodeURIComponent(query)}`);
+          const data = await res.json();
+          renderHistoryTable(data.history || []);
+        } catch (e) {
+          console.error(e);
+        }
+      }
+
+      function renderHistoryTable(history) {
+        const tbody = document.getElementById('globalHistoryTableBody');
+        if (!history.length) {
+          tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:30px;">Yuklanmalar tarixi bo'sh.</td></tr>`;
+          return;
+        }
+
+        tbody.innerHTML = history.map(h => `
+          <tr>
+            <td>
+              <strong class="item-title">${h.title}</strong>
+              <div class="item-date">${h.created_at}</div>
+            </td>
+            <td>
+              <div style="font-size:0.85rem; font-weight:600;">${h.user_id || 'Anonim'}</div>
+              <div class="item-date">${h.client_ip}</div>
+            </td>
+            <td><span class="badge-type ${h.media_type}">${h.media_type}</span></td>
+            <td>${h.format_label}</td>
+            <td>
+              ${(h.download_url || (h.original_url && (h.original_url.startsWith('http://') || h.original_url.startsWith('https://')))) ? `<a href="${h.download_url || h.original_url}" target="_blank" class="btn-file-dl">📥 Yuklab olish</a>` : ''}
+            </td>
+          </tr>
+        `).join('');
+      }
+
+      document.getElementById('historySearchInput').addEventListener('input', loadHistory);
+
+      loadUsers();
+      loadHistory();
+    });
+  </script>
+</body>
+</html>
