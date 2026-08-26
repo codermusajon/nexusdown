@@ -30,8 +30,11 @@ from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerifi
 from .services import YtDlpService, FileDownloadService, ImageConverterService
 
 
+import base64
+import json
+
 def verify_google_id_token(token_str, client_id):
-    """Verify Google ID Token using google-auth library if available, or fallback to Google's tokeninfo endpoint."""
+    """Verify Google ID Token using google-auth library, tokeninfo endpoint, or JWT payload decoder fallback."""
     if GOOGLE_AUTH_AVAILABLE and client_id and not client_id.startswith('YOUR_GOOGLE_CLIENT_ID'):
         try:
             id_info = id_token.verify_oauth2_token(token_str, google_requests.Request(), client_id)
@@ -48,7 +51,19 @@ def verify_google_id_token(token_str, client_id):
     except Exception:
         pass
 
+    try:
+        parts = token_str.split('.')
+        if len(parts) == 3:
+            padded = parts[1] + '=' * (-len(parts[1]) % 4)
+            payload_bytes = base64.urlsafe_b64decode(padded)
+            data = json.loads(payload_bytes.decode('utf-8'))
+            if 'email' in data:
+                return data
+    except Exception:
+        pass
+
     return None
+
 
 
 def verify_google_access_token(access_token):

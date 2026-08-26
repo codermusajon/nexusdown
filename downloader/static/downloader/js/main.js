@@ -1002,12 +1002,8 @@ document.addEventListener('DOMContentLoaded', () => {
         refreshHistory();
 
         setTimeout(() => {
-          if (window.location.pathname.includes('/login') || window.location.pathname.includes('/signup')) {
-            window.location.href = '/';
-          } else {
-            window.location.reload();
-          }
-        }, 500);
+          window.location.href = data.redirect_url || '/';
+        }, 300);
       } else {
         showToast(data.error || 'Google kirishda xatolik yuz berdi.', 'error');
       }
@@ -1015,6 +1011,7 @@ document.addEventListener('DOMContentLoaded', () => {
       showToast('Authentication error.', 'error');
     }
   }
+
 
   window.handleGoogleCredentialResponse = async function(googleResponse) {
     if (!googleResponse) return;
