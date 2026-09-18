@@ -87,12 +87,23 @@ class DownloadRecord(models.Model):
     file_size = models.BigIntegerField(default=0)
     duration_seconds = models.IntegerField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='processing')
-    user_id = models.CharField(max_length=100, db_index=True, blank=True, default='')
+    # Ownership: a logged-in user owns the record via `owner`; anonymous visitors are
+    # tracked by the opaque `guest_id` the browser generates. Never trust a client-supplied
+    # value to identify a registered user.
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name='download_records')
+    guest_id = models.CharField(max_length=100, db_index=True, blank=True, default='')
     client_ip = models.CharField(max_length=45, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ['-created_at']
+
+    @property
+    def owner_label(self):
+        """Human-readable owner for admin views."""
+        if self.owner_id:
+            return self.owner.email or self.owner.username
+        return self.guest_id
 
     @property
     def download_url(self):

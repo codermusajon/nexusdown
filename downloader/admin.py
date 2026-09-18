@@ -33,6 +33,8 @@ class EmailVerificationCodeAdmin(admin.ModelAdmin):
 
 @admin.register(DownloadRecord)
 class DownloadRecordAdmin(admin.ModelAdmin):
-    list_display = ('title', 'media_type', 'format_label', 'user_id', 'client_ip', 'status', 'created_at')
+    list_display = ('title', 'media_type', 'format_label', 'owner', 'guest_id', 'client_ip', 'status', 'created_at')
     list_filter = ('media_type', 'status', 'created_at')
-    search_fields = ('title', 'user_id', 'client_ip', 'original_url')
+    list_select_related = ('owner',)
+    raw_id_fields = ('owner',)
+    search_fields = ('title', 'owner__email', 'owner__username', 'guest_id', 'client_ip', 'original_url')

@@ -330,22 +330,22 @@
         tbody.innerHTML = filtered.map(u => `
           <tr>
             <td>
-              <strong class="item-title">${u.name}</strong>
-              <div class="item-date">@${u.username} ${u.is_staff ? '⭐ (Admin)' : ''}</div>
+              <strong class="item-title">${escapeHtml(u.name)}</strong>
+              <div class="item-date">@${escapeHtml(u.username)} ${u.is_staff ? '⭐ (Admin)' : ''}</div>
             </td>
-            <td>${u.email}</td>
+            <td>${escapeHtml(u.email)}</td>
             <td>
               ${u.is_premium 
-                ? `<span class="badge-premium">👑PREMIUM ${u.premium_expires_at ? '('+u.premium_expires_at+')' : ''}</span>`
+                ? `<span class="badge-premium">👑PREMIUM ${u.premium_expires_at ? '('+escapeHtml(u.premium_expires_at)+')' : ''}</span>`
                 : `<span class="badge-free">BEPUL</span>`}
             </td>
-            <td><strong>${u.search_count_today}</strong> ta</td>
-            <td><strong>${u.total_downloads}</strong> ta</td>
-            <td><div class="item-date">${u.date_joined}</div></td>
+            <td><strong>${Number(u.search_count_today) || 0}</strong> ta</td>
+            <td><strong>${Number(u.total_downloads) || 0}</strong> ta</td>
+            <td><div class="item-date">${escapeHtml(u.date_joined)}</div></td>
             <td>
               ${u.is_premium 
-                ? `<button class="btn-act-revoke" onclick="togglePremium(${u.id}, false)">🔴 Bekor Qilish</button>`
-                : `<button class="btn-act-premium" onclick="togglePremium(${u.id}, true)">🟢 Premium Berish</button>`}
+                ? `<button class="btn-act-revoke" onclick="togglePremium(${Number(u.id)}, false)">🔴 Bekor Qilish</button>`
+                : `<button class="btn-act-premium" onclick="togglePremium(${Number(u.id)}, true)">🟢 Premium Berish</button>`}
             </td>
           </tr>
         `).join('');
@@ -386,6 +386,19 @@
         }
       }
 
+      // User-supplied strings (names, emails, video titles) must never reach innerHTML raw:
+      // a user who signs up with "<img src=x onerror=...>" as their name would run script
+      // in the admin's browser.
+      function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>'"]/g,
+          tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
+      }
+
+      function safeHref(url) {
+        if (typeof url !== 'string') return '';
+        return (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('/')) ? url : '';
+      }
+
       function renderHistoryTable(history) {
         const tbody = document.getElementById('globalHistoryTableBody');
         if (!history.length) {
@@ -396,17 +409,17 @@
         tbody.innerHTML = history.map(h => `
           <tr>
             <td>
-              <strong class="item-title">${h.title}</strong>
-              <div class="item-date">${h.created_at}</div>
+              <strong class="item-title">${escapeHtml(h.title)}</strong>
+              <div class="item-date">${escapeHtml(h.created_at)}</div>
             </td>
             <td>
-              <div style="font-size:0.85rem; font-weight:600;">${h.user_id || 'Anonim'}</div>
-              <div class="item-date">${h.client_ip}</div>
+              <div style="font-size:0.85rem; font-weight:600;">${escapeHtml(h.user_id || 'Anonim')}</div>
+              <div class="item-date">${escapeHtml(h.client_ip)}</div>
             </td>
-            <td><span class="badge-type ${h.media_type}">${h.media_type}</span></td>
-            <td>${h.format_label}</td>
+            <td><span class="badge-type ${escapeHtml(h.media_type)}">${escapeHtml(h.media_type)}</span></td>
+            <td>${escapeHtml(h.format_label)}</td>
             <td>
-              ${(h.download_url || (h.original_url && (h.original_url.startsWith('http://') || h.original_url.startsWith('https://')))) ? `<a href="${h.download_url || h.original_url}" target="_blank" class="btn-file-dl">📥 Yuklab olish</a>` : ''}
+              ${safeHref(h.download_url) || safeHref(h.original_url) ? `<a href="${escapeHtml(safeHref(h.download_url) || safeHref(h.original_url))}" target="_blank" rel="noopener" class="btn-file-dl">📥 Yuklab olish</a>` : ''}
             </td>
           </tr>
         `).join('');

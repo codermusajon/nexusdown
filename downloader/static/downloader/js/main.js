@@ -30,16 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Fetch current user auth me status and update search limit pill
-  async function checkAuthStatus() {
-    try {
-      const res = await fetch('/api/auth/me/');
-      const data = await res.json();
-      if (data.quota) {
-        updateSearchQuotaPill(data.quota);
-      }
-    } catch (e) {}
-  }
+  // checkAuthStatus() is defined once, further down (it also refreshes the quota pill).
   checkAuthStatus();
 
   // Elements
@@ -51,7 +42,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const mediaPreviewCard = document.getElementById('mediaPreviewCard');
   
   const mediaThumbnail = document.getElementById('mediaThumbnail');
+  const mediaYoutubePlayer = document.getElementById('mediaYoutubePlayer');
   const mediaVideoPlayer = document.getElementById('mediaVideoPlayer');
+  const mediaAudioPlayer = document.getElementById('mediaAudioPlayer');
+  const playerAudioSyncBadge = document.getElementById('playerAudioSyncBadge');
+  const activeQualityIndicator = document.getElementById('activeQualityIndicator');
   const btnPlayMediaVideo = document.getElementById('btnPlayMediaVideo');
   const mediaDuration = document.getElementById('mediaDuration');
   const mediaTitle = document.getElementById('mediaTitle');
@@ -61,17 +56,96 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const DEFAULT_PLACEHOLDER_SVG = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="%230f172a"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%2300f2fe" font-family="sans-serif" font-weight="bold" font-size="16">NexusDown Media</text></svg>';
 
+  let isAudioSyncActive = false;
+
   if (mediaThumbnail) {
     mediaThumbnail.onerror = () => {
       mediaThumbnail.src = DEFAULT_PLACEHOLDER_SVG;
     };
   }
 
-  if (btnPlayMediaVideo && mediaVideoPlayer && mediaThumbnail) {
+  // --- Smart Dual Player Synchronization Controller ---
+  function setupVideoAudioSync(videoEl, audioEl) {
+    if (!videoEl || !audioEl) return;
+
+    videoEl.addEventListener('play', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.currentTime = videoEl.currentTime;
+        audioEl.play().catch(e => console.log('Audio sync play:', e));
+      }
+    });
+
+    videoEl.addEventListener('pause', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.pause();
+      }
+    });
+
+    videoEl.addEventListener('seeking', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.currentTime = videoEl.currentTime;
+      }
+    });
+
+    videoEl.addEventListener('seeked', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.currentTime = videoEl.currentTime;
+      }
+    });
+
+    videoEl.addEventListener('ratechange', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.playbackRate = videoEl.playbackRate;
+      }
+    });
+
+    videoEl.addEventListener('volumechange', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.volume = videoEl.volume;
+        audioEl.muted = videoEl.muted;
+      }
+    });
+
+    videoEl.addEventListener('timeupdate', () => {
+      if (isAudioSyncActive && audioEl.src && !videoEl.paused && !videoEl.seeking) {
+        const drift = Math.abs(videoEl.currentTime - audioEl.currentTime);
+        if (drift > 0.3) {
+          audioEl.currentTime = videoEl.currentTime;
+        }
+      }
+    });
+
+    videoEl.addEventListener('waiting', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.pause();
+      }
+    });
+
+    videoEl.addEventListener('playing', () => {
+      if (isAudioSyncActive && audioEl.src) {
+        audioEl.currentTime = videoEl.currentTime;
+        audioEl.play().catch(e => console.log(e));
+      }
+    });
+  }
+
+  if (mediaVideoPlayer && mediaAudioPlayer) {
+    setupVideoAudioSync(mediaVideoPlayer, mediaAudioPlayer);
+  }
+
+  if (btnPlayMediaVideo && mediaThumbnail) {
     btnPlayMediaVideo.addEventListener('click', () => {
-      if (mediaVideoPlayer.src) {
+      const ytId = currentInspectedData ? (currentInspectedData.youtube_id || (currentInspectedData.original_url && (currentInspectedData.original_url.match(/(?:v=|\/embed\/|\/watch\?v=|youtu\.be\/|\/v\/)([^&\n?#]+)/) || [])[1])) : null;
+      if (ytId && mediaYoutubePlayer) {
         mediaThumbnail.style.display = 'none';
         btnPlayMediaVideo.style.display = 'none';
+        if (mediaVideoPlayer) mediaVideoPlayer.style.display = 'none';
+        mediaYoutubePlayer.style.display = 'block';
+        mediaYoutubePlayer.src = `https://www.youtube.com/embed/${ytId}?autoplay=1&enablejsapi=1`;
+      } else if (mediaVideoPlayer && mediaVideoPlayer.src) {
+        mediaThumbnail.style.display = 'none';
+        btnPlayMediaVideo.style.display = 'none';
+        if (mediaYoutubePlayer) mediaYoutubePlayer.style.display = 'none';
         mediaVideoPlayer.style.display = 'block';
         mediaVideoPlayer.play().catch(e => console.log('Autoplay blocked:', e));
       }
@@ -111,6 +185,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function resetInspectionState() {
     currentInspectedData = null;
     selectedFormatId = null;
+    isAudioSyncActive = false;
     if (mediaPreviewCard) mediaPreviewCard.style.display = 'none';
     if (photoGallerySection) photoGallerySection.style.display = 'none';
     if (photoGalleryGrid) photoGalleryGrid.innerHTML = '';
@@ -120,6 +195,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mediaTitle) mediaTitle.textContent = '';
     if (mediaAuthor) mediaAuthor.textContent = '';
     if (mediaDuration) mediaDuration.textContent = '00:00';
+    if (playerAudioSyncBadge) playerAudioSyncBadge.style.display = 'none';
+    if (activeQualityIndicator) {
+      activeQualityIndicator.style.display = 'none';
+      activeQualityIndicator.textContent = '';
+    }
+    if (mediaYoutubePlayer) {
+      mediaYoutubePlayer.src = '';
+      mediaYoutubePlayer.style.display = 'none';
+    }
+    if (mediaAudioPlayer) {
+      mediaAudioPlayer.pause();
+      mediaAudioPlayer.src = '';
+    }
     if (mediaVideoPlayer) {
       mediaVideoPlayer.pause();
       mediaVideoPlayer.src = '';
@@ -215,10 +303,24 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnOpenDirectLink = document.getElementById('btnOpenDirectLink');
   const selectedFormatLabel = document.getElementById('selectedFormatLabel');
 
-  function updateDirectLink(url, label) {
+  function updateDirectLink(url, label, fmtId) {
     if (!url) return;
     if (directLinkInput) directLinkInput.value = url;
-    if (btnOpenDirectLink) btnOpenDirectLink.href = url;
+
+    const title = (currentInspectedData && currentInspectedData.title) ? currentInspectedData.title : 'nexusdown_media';
+    const originalUrl = (currentInspectedData && currentInspectedData.original_url) ? currentInspectedData.original_url : '';
+    const isAudio = selectedMediaType === 'audio' || (label && label.toLowerCase().includes('audio'));
+    const isPhoto = selectedMediaType === 'image' || (label && label.toLowerCase().includes('photo'));
+    const ext = isAudio ? 'mp3' : (isPhoto ? 'jpg' : 'mp4');
+    const formatIdParam = fmtId || selectedFormatId || '';
+
+    // Route through streaming/download proxy to bypass 403 Access Denied and trigger direct file download
+    const streamDownloadUrl = `/api/download-media/?url=${encodeURIComponent(url)}&original_url=${encodeURIComponent(originalUrl)}&format_id=${encodeURIComponent(formatIdParam)}&is_audio=${isAudio}&filename=${encodeURIComponent(title)}&ext=${ext}`;
+
+    if (btnOpenDirectLink) {
+      btnOpenDirectLink.href = streamDownloadUrl;
+      btnOpenDirectLink.setAttribute('download', `${title}.${ext}`);
+    }
     if (selectedFormatLabel) selectedFormatLabel.textContent = label || '';
     if (directLinkContainer) directLinkContainer.style.display = 'block';
   }
@@ -303,15 +405,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isLocked) {
           btn.innerHTML = `<span style="color:#f59e0b; font-weight:700;">👑 PRO</span> ${escapeHtml(fmt.resolution || 'High Res')} 🔒`;
         } else {
-          btn.textContent = fmt.label + (fmt.filesize_mb ? ` (~${fmt.filesize_mb} MB)` : '');
+          const hasAudioTag = fmt.has_audio ? '' : ' 🎧 HQ Audio';
+          btn.textContent = fmt.label + (fmt.filesize_mb ? ` (~${fmt.filesize_mb} MB)` : '') + hasAudioTag;
         }
 
         btn.setAttribute('data-id', fmt.format_id);
         btn.setAttribute('data-type', fmt.format_id.startsWith('photo_') ? 'image' : 'video');
 
-        const applySelection = () => {
+        const applySelection = (autoResume = false) => {
           if (isLocked) {
-            openModal('modalPremiumResolution');
+            openModal('modalRegisteredLimit');
             return;
           }
 
@@ -321,26 +424,86 @@ document.addEventListener('DOMContentLoaded', () => {
           const isPhoto = (fmt.ext === 'jpg' || fmt.format_id.startsWith('photo_'));
           selectedMediaType = isPhoto ? 'image' : 'video';
 
-          if (mediaVideoPlayer) {
-            mediaVideoPlayer.pause();
-            mediaVideoPlayer.style.display = 'none';
-          }
-          if (mediaThumbnail) {
-            mediaThumbnail.style.display = 'block';
-            mediaThumbnail.style.opacity = '0.3';
-          }
-
           const targetUrl = fmt.download_url || data.thumbnail || data.fallback_url;
+          const audioUrl = data.audio_url || data.fallback_url;
 
           if (isPhoto) {
-            if (mediaThumbnail) mediaThumbnail.src = targetUrl || DEFAULT_PLACEHOLDER_SVG;
+            if (mediaVideoPlayer) {
+              mediaVideoPlayer.pause();
+              mediaVideoPlayer.style.display = 'none';
+            }
+            if (mediaAudioPlayer) {
+              mediaAudioPlayer.pause();
+              mediaAudioPlayer.src = '';
+            }
+            isAudioSyncActive = false;
+            if (playerAudioSyncBadge) playerAudioSyncBadge.style.display = 'none';
+            if (activeQualityIndicator) activeQualityIndicator.style.display = 'none';
+
+            if (mediaThumbnail) {
+              mediaThumbnail.style.display = 'block';
+              mediaThumbnail.src = targetUrl || DEFAULT_PLACEHOLDER_SVG;
+            }
             if (btnPlayMediaVideo) btnPlayMediaVideo.style.display = 'none';
             if (mediaDuration) mediaDuration.style.display = 'none';
           } else {
-            if (mediaThumbnail) mediaThumbnail.src = data.thumbnail || DEFAULT_PLACEHOLDER_SVG;
-            if (mediaVideoPlayer && targetUrl) {
+            // Video format
+            const wasPlaying = mediaVideoPlayer && !mediaVideoPlayer.paused && mediaVideoPlayer.currentTime > 0;
+            const savedTime = mediaVideoPlayer ? mediaVideoPlayer.currentTime : 0;
+
+            if (activeQualityIndicator) {
+              activeQualityIndicator.textContent = fmt.resolution || fmt.label;
+              activeQualityIndicator.style.display = 'inline-flex';
+            }
+
+            const ytId = data.youtube_id || (data.original_url && (data.original_url.match(/(?:v=|\/embed\/|\/watch\?v=|youtu\.be\/|\/v\/)([^&\n?#]+)/) || [])[1]);
+            const targetYtEmbed = ytId ? `https://www.youtube.com/embed/${ytId}?autoplay=1&enablejsapi=1` : null;
+
+            if (targetYtEmbed && autoResume) {
+              if (mediaThumbnail) mediaThumbnail.style.display = 'none';
+              if (btnPlayMediaVideo) btnPlayMediaVideo.style.display = 'none';
+              if (mediaVideoPlayer) mediaVideoPlayer.style.display = 'none';
+              if (mediaYoutubePlayer) {
+                mediaYoutubePlayer.style.display = 'block';
+                if (!mediaYoutubePlayer.src || !mediaYoutubePlayer.src.includes(ytId)) {
+                  mediaYoutubePlayer.src = targetYtEmbed;
+                }
+              }
+            } else if (mediaVideoPlayer && targetUrl) {
               mediaVideoPlayer.src = targetUrl;
-              if (btnPlayMediaVideo) btnPlayMediaVideo.style.display = 'flex';
+
+              // Check if video is video-only stream (e.g. YouTube 1080p, 1440p, 4K)
+              if (!fmt.has_audio && audioUrl) {
+                isAudioSyncActive = true;
+                if (mediaAudioPlayer) {
+                  mediaAudioPlayer.src = audioUrl;
+                }
+                if (playerAudioSyncBadge) playerAudioSyncBadge.style.display = 'inline-flex';
+              } else {
+                isAudioSyncActive = false;
+                if (mediaAudioPlayer) {
+                  mediaAudioPlayer.pause();
+                  mediaAudioPlayer.src = '';
+                }
+                if (playerAudioSyncBadge) playerAudioSyncBadge.style.display = 'none';
+              }
+
+              if (wasPlaying || autoResume) {
+                mediaThumbnail.style.display = 'none';
+                if (btnPlayMediaVideo) btnPlayMediaVideo.style.display = 'none';
+                mediaVideoPlayer.style.display = 'block';
+                mediaVideoPlayer.onloadedmetadata = () => {
+                  if (savedTime > 0) mediaVideoPlayer.currentTime = savedTime;
+                  mediaVideoPlayer.play().catch(e => console.log('Resume err:', e));
+                };
+              }
+            }
+
+            if (mediaThumbnail && (!mediaVideoPlayer || mediaVideoPlayer.style.display === 'none') && (!mediaYoutubePlayer || mediaYoutubePlayer.style.display === 'none')) {
+              mediaThumbnail.src = data.thumbnail || DEFAULT_PLACEHOLDER_SVG;
+            }
+            if (btnPlayMediaVideo && (!mediaVideoPlayer || mediaVideoPlayer.style.display === 'none') && (!mediaYoutubePlayer || mediaYoutubePlayer.style.display === 'none')) {
+              btnPlayMediaVideo.style.display = 'flex';
             }
             if (mediaDuration) {
               mediaDuration.style.display = 'block';
@@ -349,14 +512,14 @@ document.addEventListener('DOMContentLoaded', () => {
           }
 
           setTimeout(() => { if (mediaThumbnail) mediaThumbnail.style.opacity = '1'; }, 150);
-          updateDirectLink(targetUrl, fmt.label);
+          updateDirectLink(targetUrl, fmt.label, fmt.format_id);
         };
 
-        btn.addEventListener('click', applySelection);
+        btn.addEventListener('click', () => applySelection(false));
 
         if (!firstUnlockedSelected && !isLocked) {
           firstUnlockedSelected = true;
-          applySelection();
+          applySelection(false);
         }
 
         formatOptionsGrid.appendChild(btn);
@@ -368,7 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if ((data.audio_url || data.fallback_url) && formatOptionsGrid) {
       const audioBtn = document.createElement('button');
       audioBtn.className = 'format-option-btn';
-      audioBtn.textContent = '🎵 Audio Stream';
+      audioBtn.textContent = '🎵 Audio Stream (HQ)';
       audioBtn.setAttribute('data-id', 'bestaudio/best');
       audioBtn.setAttribute('data-type', 'audio');
 
@@ -377,9 +540,19 @@ document.addEventListener('DOMContentLoaded', () => {
         audioBtn.classList.add('selected');
         selectedFormatId = 'bestaudio/best';
         selectedMediaType = 'audio';
+        isAudioSyncActive = false;
+        if (playerAudioSyncBadge) playerAudioSyncBadge.style.display = 'none';
+        if (activeQualityIndicator) {
+          activeQualityIndicator.textContent = 'Audio (HQ)';
+          activeQualityIndicator.style.display = 'inline-flex';
+        }
 
         const audioUrl = data.audio_url || data.fallback_url;
 
+        if (mediaYoutubePlayer) {
+          mediaYoutubePlayer.style.display = 'none';
+          mediaYoutubePlayer.src = '';
+        }
         if (mediaVideoPlayer) {
           mediaVideoPlayer.pause();
           mediaVideoPlayer.style.display = 'none';
@@ -402,7 +575,7 @@ document.addEventListener('DOMContentLoaded', () => {
           mediaDuration.textContent = data.duration_str || '00:00';
         }
 
-        updateDirectLink(audioUrl, 'Audio Stream');
+        updateDirectLink(audioUrl, 'Audio Stream (HQ)', 'bestaudio/best');
       });
 
       formatOptionsGrid.appendChild(audioBtn);
@@ -971,10 +1144,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (gAuthAuth) gAuthAuth.style.display = 'none';
   }
 
+  // Fetch current user auth status, update the header widget and the search-quota pill.
   async function checkAuthStatus() {
     try {
       const res = await fetch('/api/auth/me/');
       const data = await res.json();
+      if (data.quota) {
+        updateSearchQuotaPill(data.quota);
+      }
       if (data.is_authenticated && data.user) {
         renderAuthUser(data.user);
       } else {
@@ -1067,7 +1244,12 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const redirectUri = window.location.origin + '/login/';
+    let origin = window.location.origin;
+    // Always use HTTPS for production domains (e.g. pythonanywhere) to avoid redirect_uri_mismatch on mobile
+    if (!origin.includes('localhost') && !origin.includes('127.0.0.1') && origin.startsWith('http://')) {
+      origin = origin.replace('http://', 'https://');
+    }
+    const redirectUri = origin + '/login/';
     const scope = encodeURIComponent('email profile openid');
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${scope}&prompt=select_account`;
 
@@ -1101,9 +1283,13 @@ document.addEventListener('DOMContentLoaded', () => {
             'X-CSRFToken': getCookie('csrftoken')
           }
         });
-        const data = await res.json();
+        if (!res.ok) {
+          showToast('Logout xatosi.', 'error');
+          return;
+        }
         renderUnauth();
         showToast('Tizimdan muvaffaqiyatli chiqdingiz.', 'info');
+        checkAuthStatus();
         refreshHistory();
       } catch (err) {
         showToast('Logout xatosi.', 'error');
@@ -1125,9 +1311,13 @@ function switchAuthTab(tabName) {
   const tabSignup = document.getElementById('tabSignup');
   const formLogin = document.getElementById('formLogin');
   const formRegister = document.getElementById('formRegister');
+  const formVerify = document.getElementById('formVerifyCode');
+  const authTabsGroup = document.getElementById('authTabsGroup');
   const authAlert = document.getElementById('authAlert');
 
   if (authAlert) authAlert.style.display = 'none';
+  if (authTabsGroup) authTabsGroup.style.display = 'flex';
+  if (formVerify) formVerify.classList.add('hidden-form');
 
   if (tabName === 'login') {
     if (tabLogin) tabLogin.classList.add('active');
@@ -1378,13 +1568,23 @@ async function handleRegisterSubmit(e) {
     if (res.ok && data.status === 'success') {
       displayAuthAlert(data.message || 'Tasdiqlash kodi emailingizga yuborildi!', 'success');
 
+      const formLogin = document.getElementById('formLogin');
       const formReg = document.getElementById('formRegister');
       const formVerify = document.getElementById('formVerifyCode');
+      const authTabsGroup = document.getElementById('authTabsGroup');
       const emailTarget = document.getElementById('verifyEmailTarget');
+      const codeInput = document.getElementById('verifyCodeInput');
 
+      if (authTabsGroup) authTabsGroup.style.display = 'none';
+      if (formLogin) formLogin.classList.add('hidden-form');
       if (formReg) formReg.classList.add('hidden-form');
       if (formVerify) formVerify.classList.remove('hidden-form');
       if (emailTarget) emailTarget.textContent = email;
+
+      if (codeInput) {
+        codeInput.value = '';
+        setTimeout(() => codeInput.focus(), 150);
+      }
 
       startVerifyTimer(data.expires_in_seconds || 600);
       startResendCooldown(data.cooldown_seconds || 120);

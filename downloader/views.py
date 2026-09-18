@@ -1,18 +1,22 @@
 import os
+import re
 import uuid
 import random
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
 from django.shortcuts import render, get_object_or_404, redirect
-from django.http import JsonResponse, FileResponse, Http404
+from django.http import JsonResponse, FileResponse, Http404, StreamingHttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
 from django.utils import timezone
-from django.core.mail import send_mail
+from django.core.mail import send_mail, EmailMultiAlternatives
 from django.contrib.admin.views.decorators import staff_member_required
+from django.core.exceptions import ValidationError
+from django.db.models import Count, Q
 import requests
 
 try:
@@ -30,11 +34,76 @@ from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerifi
 from .services import YtDlpService, FileDownloadService, ImageConverterService
 
 
-import base64
 import json
+import ipaddress
+import socket
+from urllib.parse import urlparse
+from django.contrib.auth.hashers import make_password
+
+
+def is_safe_public_url(target_url):
+    """Validate that the URL is public HTTP/HTTPS and not pointing to internal/private/loopback/cloud metadata IPs."""
+    if not target_url or not isinstance(target_url, str):
+        return False
+    try:
+        parsed = urlparse(target_url.strip())
+        if parsed.scheme not in ('http', 'https'):
+            return False
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        
+        hostname_lower = hostname.lower()
+        if hostname_lower in ('localhost', '127.0.0.1', '::1', '0.0.0.0', '169.254.169.254'):
+            return False
+            
+        try:
+            # Check every address the host resolves to (A and AAAA), not just the first one.
+            infos = socket.getaddrinfo(hostname, None)
+        except Exception:
+            return False
+        if not infos:
+            return False
+        for info in infos:
+            try:
+                ip = ipaddress.ip_address(info[4][0])
+            except ValueError:
+                return False
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+                return False
+
+        return True
+    except Exception:
+        return False
+
+
+def safe_stream_get(url, headers, timeout=30, max_redirects=5):
+    """requests.get(stream=True) that re-validates every redirect hop against is_safe_public_url.
+
+    requests follows redirects itself, which would let a public URL bounce us onto an internal
+    address after the initial check passed.
+    """
+    current = url
+    for _ in range(max_redirects + 1):
+        if not is_safe_public_url(current):
+            raise ValueError('Unsafe redirect target')
+        resp = requests.get(current, headers=headers, stream=True, timeout=timeout, allow_redirects=False)
+        if resp.is_redirect or resp.is_permanent_redirect:
+            location = resp.headers.get('Location')
+            resp.close()
+            if not location:
+                raise ValueError('Redirect without Location')
+            current = requests.compat.urljoin(current, location)
+            continue
+        return resp
+    raise ValueError('Too many redirects')
+
 
 def verify_google_id_token(token_str, client_id):
-    """Verify Google ID Token using google-auth library, tokeninfo endpoint, or JWT payload decoder fallback."""
+    """Verify Google ID Token securely using google-auth library or Google tokeninfo endpoint."""
+    if not token_str:
+        return None
+
     if GOOGLE_AUTH_AVAILABLE and client_id and not client_id.startswith('YOUR_GOOGLE_CLIENT_ID'):
         try:
             id_info = id_token.verify_oauth2_token(token_str, google_requests.Request(), client_id)
@@ -47,17 +116,9 @@ def verify_google_id_token(token_str, client_id):
         if resp.status_code == 200:
             data = resp.json()
             if 'error' not in data and ('email' in data or 'sub' in data):
-                return data
-    except Exception:
-        pass
-
-    try:
-        parts = token_str.split('.')
-        if len(parts) == 3:
-            padded = parts[1] + '=' * (-len(parts[1]) % 4)
-            payload_bytes = base64.urlsafe_b64decode(padded)
-            data = json.loads(payload_bytes.decode('utf-8'))
-            if 'email' in data:
+                if client_id and not client_id.startswith('YOUR_GOOGLE_CLIENT_ID'):
+                    if data.get('aud') != client_id:
+                        return None
                 return data
     except Exception:
         pass
@@ -66,9 +127,27 @@ def verify_google_id_token(token_str, client_id):
 
 
 
-def verify_google_access_token(access_token):
-    """Verify Google OAuth2 Access Token by requesting userinfo from Google API."""
+def verify_google_access_token(access_token, client_id=None):
+    """Verify a Google OAuth2 access token and return the userinfo payload.
+
+    The token is first checked against Google's tokeninfo endpoint so we only accept tokens
+    that were issued *to this application* (aud/azp). Without that check any Google token a
+    victim granted to some other app would log them in here.
+    """
+    if not access_token:
+        return None
     try:
+        if client_id:
+            info_resp = requests.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": access_token},
+                timeout=5,
+            )
+            if info_resp.status_code != 200:
+                return None
+            info = info_resp.json()
+            if info.get('aud') != client_id and info.get('azp') != client_id:
+                return None
         resp = requests.get(
             "https://www.googleapis.com/oauth2/v3/userinfo",
             headers={"Authorization": f"Bearer {access_token}"},
@@ -93,20 +172,68 @@ def get_client_ip(request):
     return ip
 
 
-def get_client_user_id(request):
-    """Get unique user ID from authenticated Django user, headers, cookies, or GET/POST params."""
-    if hasattr(request, 'user') and request.user and request.user.is_authenticated:
-        return request.user.email or request.user.username
-    user_id = request.headers.get('X-User-Id') or request.COOKIES.get('user_unique_id')
-    if not user_id:
-        req_data = getattr(request, 'data', {})
-        if isinstance(req_data, dict):
-            user_id = req_data.get('user_id')
-    if not user_id and hasattr(request, 'POST'):
-        user_id = request.POST.get('user_id')
-    if not user_id and hasattr(request, 'GET'):
-        user_id = request.GET.get('user_id')
-    return (user_id or '').strip()
+GUEST_ID_RE = re.compile(r'^[A-Za-z0-9_\-]{6,100}$')
+
+
+def get_guest_id(request):
+    """Opaque browser-generated id for anonymous visitors (X-User-Id header or cookie).
+
+    Only used to group an anonymous visitor's own history. It is never treated as a
+    registered-user identity, and anything that does not look like the client-generated
+    `usr_...` token (e.g. an email address) is ignored.
+    """
+    raw = (request.headers.get('X-User-Id') or request.COOKIES.get('user_unique_id') or '').strip()
+    return raw if GUEST_ID_RE.match(raw) else ''
+
+
+def _is_authenticated(request):
+    return bool(getattr(request, 'user', None) and request.user.is_authenticated)
+
+
+def records_for(request):
+    """Queryset of DownloadRecords the requester is allowed to see/modify."""
+    if _is_authenticated(request):
+        return DownloadRecord.objects.filter(owner=request.user)
+    guest_id = get_guest_id(request)
+    if guest_id:
+        return DownloadRecord.objects.filter(owner__isnull=True, guest_id=guest_id)
+    return DownloadRecord.objects.none()
+
+
+def record_owner_fields(request):
+    """Kwargs to stamp ownership on a new DownloadRecord."""
+    if _is_authenticated(request):
+        return {'owner': request.user}
+    return {'guest_id': get_guest_id(request)}
+
+
+def claim_guest_records(request, user):
+    """After login, attach the browser's anonymous history to the now-logged-in user."""
+    guest_id = get_guest_id(request)
+    if guest_id:
+        DownloadRecord.objects.filter(owner__isnull=True, guest_id=guest_id).update(owner=user)
+
+
+def apply_admin_email_rule(user, profile):
+    """Grant staff/superuser/premium to emails listed in settings.ADMIN_EMAILS."""
+    admin_emails = {e.strip().lower() for e in getattr(settings, 'ADMIN_EMAILS', []) if e.strip()}
+    if user.email and user.email.lower() in admin_emails:
+        user.is_staff = True
+        user.is_superuser = True
+        profile.is_premium = True
+        user.save(update_fields=['is_staff', 'is_superuser'])
+        profile.save(update_fields=['is_premium'])
+
+
+def staff_required_api(view_func):
+    """403 for anyone who is not staff/superuser (for DRF function views)."""
+    def _wrapped(request, *args, **kwargs):
+        if not _is_authenticated(request) or not (request.user.is_staff or request.user.is_superuser):
+            return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+        return view_func(request, *args, **kwargs)
+    _wrapped.__name__ = view_func.__name__
+    _wrapped.__doc__ = view_func.__doc__
+    return _wrapped
 
 
 def get_daily_search_status(request):
@@ -128,9 +255,9 @@ def get_daily_search_status(request):
         is_premium = False
         limit = 2
         user_type = 'unregistered'
-        client_uid = get_client_user_id(request)
-        ip = get_client_ip(request)
-        identifier = f"anon_{client_uid or ip}"
+        # Key anonymous quota on IP, not on the client-chosen guest id, otherwise the
+        # daily limit is bypassed by simply generating a new id per request.
+        identifier = f"anon_{get_client_ip(request) or 'unknown'}"
 
     tracker, _ = DailySearchTracker.objects.get_or_create(identifier=identifier, date=today)
     searches_today = tracker.search_count
@@ -149,8 +276,7 @@ def get_daily_search_status(request):
 def index_view(request):
     """Render main application single-page dashboard."""
     current_year = datetime.now().year - 2006
-    user_id = get_client_user_id(request)
-    recent_downloads = DownloadRecord.objects.filter(user_id=user_id)[:10] if user_id else DownloadRecord.objects.none()
+    recent_downloads = records_for(request)[:10]
     status_info = get_daily_search_status(request)
 
     context = {
@@ -168,6 +294,8 @@ def api_inspect(request):
     url = request.data.get('url', '').strip()
     if not url:
         return Response({'error': 'URL parameter is required.'}, status=status.HTTP_400_BAD_REQUEST)
+    if not is_safe_public_url(url):
+        return Response({'error': "Yaroqsiz yoki qo'llab-quvvatlanmaydigan havola."}, status=status.HTTP_400_BAD_REQUEST)
 
     status_info = get_daily_search_status(request)
     limit = status_info['limit']
@@ -191,7 +319,6 @@ def api_inspect(request):
                 'telegram_info': '@coder_ismoil'
             }, status=status.HTTP_403_FORBIDDEN)
 
-    user_id = get_client_user_id(request)
     client_ip = get_client_ip(request)
 
     result = YtDlpService.inspect_url(url)
@@ -211,6 +338,7 @@ def api_inspect(request):
             if h > 1080:
                 fmt['is_locked'] = True
                 fmt['download_url'] = '#premium_required'
+                fmt['format_id'] = 'premium_required'
                 fmt['label'] = f"👑 PRO {fmt.get('resolution', f'{h}p')} (Lock)"
             else:
                 fmt['is_locked'] = False
@@ -226,13 +354,13 @@ def api_inspect(request):
     # Log download record
     try:
         DownloadRecord.objects.create(
-            user_id=user_id,
             client_ip=client_ip,
             title=result.get('title', 'Extracted Media'),
             original_url=url,
             media_type='video' if result.get('video_formats') else 'audio',
             format_label=f"{len(result.get('video_formats', []))} Links",
-            status='completed'
+            status='completed',
+            **record_owner_fields(request),
         )
     except Exception:
         pass
@@ -244,7 +372,11 @@ def download_file_view(request, record_id):
     """Serve converted file or redirect to original media URL for a download record."""
     try:
         record = DownloadRecord.objects.get(id=record_id)
-    except (DownloadRecord.DoesNotExist, ValueError):
+    except (DownloadRecord.DoesNotExist, ValueError, ValidationError):
+        raise Http404("Yuklab olinadigan yozuv topilmadi.")
+
+    is_staff = _is_authenticated(request) and (request.user.is_staff or request.user.is_superuser)
+    if not is_staff and not records_for(request).filter(id=record.id).exists():
         raise Http404("Yuklab olinadigan yozuv topilmadi.")
 
     target_path = None
@@ -275,14 +407,85 @@ def download_file_view(request, record_id):
     raise Http404("Fayl topilmadi.")
 
 
+def api_download_media_stream(request):
+    """Download or stream media file directly to user's browser, bypassing 403 blocks."""
+    url = request.GET.get('url')
+    original_url = request.GET.get('original_url')
+    format_id = request.GET.get('format_id')
+    is_audio = request.GET.get('is_audio') in ['true', '1', True]
+    filename = request.GET.get('filename') or 'nexusdown_media'
+    ext = request.GET.get('ext') or ('mp3' if is_audio else 'mp4')
+
+    clean_name = re.sub(r'[^a-zA-Z0-9_\-\. ]', '_', filename).strip().replace(' ', '_')
+    if not clean_name:
+        clean_name = "nexusdown_media"
+    if not clean_name.endswith(f".{ext}"):
+        clean_filename = f"{clean_name}.{ext}"
+    else:
+        clean_filename = clean_name
+
+    if format_id == 'premium_required':
+        return JsonResponse({'error': 'Ushbu sifat faqat Premium foydalanuvchilar uchun.'}, status=403)
+
+    # Non-premium users are capped at 1080p server-side; the lock in the UI is only cosmetic.
+    is_premium = get_daily_search_status(request)['is_premium']
+    max_height = None if is_premium else 1080
+
+    # If original_url is provided (e.g. YouTube video / TikTok / Instagram), use YtDlpService
+    if original_url and is_safe_public_url(original_url):
+        try:
+            download_res = YtDlpService.download_media(
+                url=original_url,
+                format_id=format_id,
+                is_audio=is_audio,
+                output_dir=settings.DOWNLOADS_DIR,
+                max_height=max_height,
+            )
+            if download_res and download_res.get('file_path') and os.path.exists(download_res['file_path']):
+                return FileResponse(
+                    open(download_res['file_path'], 'rb'),
+                    as_attachment=True,
+                    filename=clean_filename
+                )
+        except Exception:
+            pass
+
+    # Direct URL streaming fallback (with SSRF protection)
+    if not url or not is_safe_public_url(url):
+        raise Http404("Yaroqsiz media havolasi.")
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity;q=1, *;q=0',
+        'Range': 'bytes=0-'
+    }
+
+    try:
+        remote_resp = safe_stream_get(url, headers)
+        if remote_resp.status_code in [200, 206]:
+            content_type = remote_resp.headers.get('Content-Type') or f'video/{ext}'
+
+            def file_iterator(chunk_size=1024 * 64):
+                for chunk in remote_resp.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        yield chunk
+
+            response = StreamingHttpResponse(file_iterator(), content_type=content_type)
+            response['Content-Disposition'] = f'attachment; filename="{clean_filename}"'
+            if 'Content-Length' in remote_resp.headers:
+                response['Content-Length'] = remote_resp.headers['Content-Length']
+            return response
+    except Exception:
+        pass
+
+    return redirect(url)
+
+
 @api_view(['GET'])
 def api_history(request):
     """Get list of recent link extraction records for the requesting user."""
-    user_id = get_client_user_id(request)
-    if user_id:
-        records = DownloadRecord.objects.filter(user_id=user_id)[:30]
-    else:
-        records = DownloadRecord.objects.none()
+    records = records_for(request)[:30]
 
     data = []
     for r in records:
@@ -367,12 +570,10 @@ def api_convert_images(request):
                 except Exception:
                     pass
 
-        user_id = get_client_user_id(request)
         client_ip = get_client_ip(request)
 
         file_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
         record = DownloadRecord.objects.create(
-            user_id=user_id,
             client_ip=client_ip,
             title=output_name,
             original_url='',
@@ -381,7 +582,8 @@ def api_convert_images(request):
             file_name=output_name,
             file_path=output_path,
             file_size=file_size,
-            status='completed'
+            status='completed',
+            **record_owner_fields(request),
         )
 
         return Response({
@@ -405,14 +607,16 @@ def api_convert_images(request):
 @api_view(['POST', 'DELETE'])
 def api_delete_history(request):
     """Delete a single download record for the requesting user."""
-    user_id = get_client_user_id(request)
     req_data = getattr(request, 'data', {})
     record_id = (req_data.get('id') if isinstance(req_data, dict) else None) or request.POST.get('id') or request.GET.get('id')
 
-    if not record_id or not user_id:
+    if not record_id or not (_is_authenticated(request) or get_guest_id(request)):
         return Response({'error': 'Record ID and User ID are required.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    deleted_count, _ = DownloadRecord.objects.filter(id=record_id, user_id=user_id).delete()
+    try:
+        deleted_count, _ = records_for(request).filter(id=record_id).delete()
+    except (ValueError, ValidationError):
+        deleted_count = 0
     if deleted_count > 0:
         return Response({'status': 'success', 'message': 'Record deleted successfully.'})
     return Response({'error': 'Record not found or permission denied.'}, status=status.HTTP_404_NOT_FOUND)
@@ -421,11 +625,10 @@ def api_delete_history(request):
 @api_view(['POST', 'DELETE'])
 def api_clear_history(request):
     """Clear all download history records for the requesting user."""
-    user_id = get_client_user_id(request)
-    if not user_id:
+    if not (_is_authenticated(request) or get_guest_id(request)):
         return Response({'error': 'User identification missing.'}, status=status.HTTP_400_BAD_REQUEST)
 
-    deleted_count, _ = DownloadRecord.objects.filter(user_id=user_id).delete()
+    deleted_count, _ = records_for(request).delete()
     return Response({
         'status': 'success',
         'message': f'{deleted_count} history records cleared successfully.',
@@ -449,7 +652,7 @@ def api_google_auth(request):
         id_info = verify_google_id_token(token_str, client_id)
 
     if not id_info and access_token:
-        id_info = verify_google_access_token(access_token)
+        id_info = verify_google_access_token(access_token, client_id)
 
     if not id_info:
         return Response({'error': 'Invalid or expired Google token.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -469,21 +672,22 @@ def api_google_auth(request):
         username = f"{base_username}_{counter}"
         counter += 1
 
-    user, created = User.objects.get_or_create(email=email, defaults={
-        'username': username,
-        'first_name': first_name,
-        'last_name': last_name,
-    })
+    # Django's User.email is not unique; look up case-insensitively and take the oldest
+    # match instead of get_or_create(), which raises on duplicates.
+    user = User.objects.filter(email__iexact=email).order_by('id').first()
+    created = user is None
+    if created:
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        user.set_unusable_password()
+        user.save(update_fields=['password'])
 
     profile, _ = UserProfile.objects.get_or_create(user=user)
-
-    # Special Admin Rule: coderismoil@gmail.com is auto superuser + staff + premium
-    if user.email.lower() == 'coderismoil@gmail.com':
-        user.is_staff = True
-        user.is_superuser = True
-        profile.is_premium = True
-        user.save()
-        profile.save()
+    apply_admin_email_rule(user, profile)
 
     if not created:
         if first_name and not user.first_name:
@@ -495,10 +699,7 @@ def api_google_auth(request):
     login(request, user)
     request.session['user_avatar'] = picture
     request.session.save()
-
-    client_user_id = request.COOKIES.get('user_unique_id') or request.headers.get('X-User-Id')
-    if client_user_id and client_user_id != email:
-        DownloadRecord.objects.filter(user_id=client_user_id).update(user_id=email)
+    claim_guest_records(request, user)
 
     redirect_url = '/admin-dashboard/' if (user.is_staff or user.is_superuser) else '/'
 
@@ -618,18 +819,8 @@ def api_auth_login(request):
 
     login(request, user)
     profile, _ = UserProfile.objects.get_or_create(user=user)
-
-    # Special Admin Rule: coderismoil@gmail.com is auto superuser + staff + premium
-    if user.email and user.email.lower() == 'coderismoil@gmail.com':
-        user.is_staff = True
-        user.is_superuser = True
-        profile.is_premium = True
-        user.save()
-        profile.save()
-
-    client_user_id = request.COOKIES.get('user_unique_id') or request.headers.get('X-User-Id')
-    if client_user_id and user.email and client_user_id != user.email:
-        DownloadRecord.objects.filter(user_id=client_user_id).update(user_id=user.email or user.username)
+    apply_admin_email_rule(user, profile)
+    claim_guest_records(request, user)
 
     picture = request.session.get('user_avatar', '')
     redirect_url = '/admin-dashboard/' if (user.is_staff or user.is_superuser) else '/'
@@ -705,6 +896,7 @@ def api_auth_send_code(request):
 
     code = f"{random.randint(100000, 999999)}"
     expires_at = now + timedelta(minutes=10)
+    hashed_password = make_password(password)
 
     EmailVerificationCode.objects.create(
         email=email,
@@ -713,29 +905,53 @@ def api_auth_send_code(request):
         user_data={
             'username': username,
             'email': email,
-            'password': password,
+            'password': hashed_password,
             'first_name': first_name,
             'last_name': last_name,
         }
     )
 
-    subject = "NexusDown - Ro'yxatdan o'tish tasdiqlash kodi"
-    message = (
-        f"Salom {username}!\n\n"
-        f"NexusDown platformasida ro'yxatdan o'tish uchun tasdiqlash kodingiz: {code}\n\n"
-        f"Ushbu kod 10 daqiqa davomida amal qiladi.\n"
-        f"Agar siz ro'yxatdan o'tishni so'ramagan bo'lsangiz, ushbu xabarga e'tibor bermang."
-    )
-    try:
-        send_mail(
-            subject=subject,
-            message=message,
-            from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', 'NexusDown <noreply@nexusdown.com>'),
-            recipient_list=[email],
-            fail_silently=True
+    def _send_email_task():
+        subject = f"NexusDown - Tasdiqlash kodingiz: {code}"
+        text_content = (
+            f"Salom {username}!\n\n"
+            f"NexusDown platformasida ro'yxatdan o'tish uchun tasdiqlash kodingiz: {code}\n\n"
+            f"Ushbu kod 10 daqiqa davomida amal qiladi.\n"
+            f"Agar siz ro'yxatdan o'tishni so'ramagan bo'lsangiz, ushbu xabarga e'tibor bermang."
         )
-    except Exception as e:
-        print(f"Error sending email: {e}")
+        html_content = f"""
+        <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f1f5f9; padding: 32px 20px; max-width: 480px; margin: 0 auto; border-radius: 16px; border: 1px solid #1e293b;">
+            <div style="text-align: center; margin-bottom: 24px;">
+                <h1 style="background: linear-gradient(135deg, #00f2fe, #4facfe); -webkit-background-clip: text; -webkit-text-fill-color: #00f2fe; font-size: 26px; font-weight: 800; margin: 0;">NexusDown</h1>
+                <p style="color: #94a3b8; font-size: 13px; margin: 4px 0 0 0;">Ro'yxatdan o'tishni tasdiqlash</p>
+            </div>
+            <p style="font-size: 15px; color: #e2e8f0; margin-bottom: 12px;">Salom <strong>{username}</strong>,</p>
+            <p style="font-size: 14px; color: #94a3b8; line-height: 1.5; margin-bottom: 20px;">
+                Platformamizda hisob yaratish uchun quyidagi 6 xonali tasdiqlash kodidan foydalaning:
+            </p>
+            <div style="text-align: center; margin: 24px 0;">
+                <div style="display: inline-block; background: linear-gradient(135deg, #6366f1, #a855f7); color: #ffffff; font-size: 30px; font-weight: 800; letter-spacing: 8px; padding: 14px 32px; border-radius: 12px; box-shadow: 0 4px 20px rgba(168, 85, 247, 0.4);">
+                    {code}
+                </div>
+            </div>
+            <p style="font-size: 13px; color: #fbbf24; text-align: center; margin-bottom: 24px;">
+                ⏳ Ushbu kod <strong>10 daqiqa</strong> davomida amal qiladi.
+            </p>
+            <hr style="border: none; border-top: 1px solid #1e293b; margin: 20px 0;">
+            <p style="font-size: 11px; color: #64748b; text-align: center; margin: 0;">
+                Agar siz NexusDown'dan ro'yxatdan o'tishni so'ramagan bo'lsangiz, ushbu xabarni e'tiborsiz qoldiring.
+            </p>
+        </div>
+        """
+        try:
+            from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'NexusDown <noreply@nexusdown.com>')
+            msg = EmailMultiAlternatives(subject, text_content, from_email, [email])
+            msg.attach_alternative(html_content, "text/html")
+            msg.send(fail_silently=False)
+        except Exception as e:
+            print(f"❌ [Email Send Error]: {e}")
+
+    threading.Thread(target=_send_email_task, daemon=True).start()
 
     return Response({
         'status': 'success',
@@ -803,30 +1019,23 @@ def api_auth_verify_code(request):
 
     if User.objects.filter(username__iexact=username).exists():
         return Response({'error': 'Ushbu foydalanuvchi nomi allaqachon band qilingan.'}, status=status.HTTP_400_BAD_REQUEST)
+    if User.objects.filter(email__iexact=email).exists():
+        return Response({'error': "Ushbu email manzili ro'yxatdan o'tgan. Tizimga kiring."}, status=status.HTTP_400_BAD_REQUEST)
 
-    user = User.objects.create_user(
+    user = User(
         username=username,
         email=email,
-        password=pass_str,
         first_name=user_data.get('first_name', ''),
         last_name=user_data.get('last_name', '')
     )
+    user.password = pass_str  # Already hashed securely with make_password
+    user.save()
 
     profile, _ = UserProfile.objects.get_or_create(user=user)
-
-    # Special Admin Rule: coderismoil@gmail.com is auto superuser + staff + premium
-    if user.email and user.email.lower() == 'coderismoil@gmail.com':
-        user.is_staff = True
-        user.is_superuser = True
-        profile.is_premium = True
-        user.save()
-        profile.save()
+    apply_admin_email_rule(user, profile)
 
     login(request, user)
-
-    client_user_id = request.COOKIES.get('user_unique_id') or request.headers.get('X-User-Id')
-    if client_user_id and client_user_id != user.email:
-        DownloadRecord.objects.filter(user_id=client_user_id).update(user_id=user.email or user.username)
+    claim_guest_records(request, user)
 
     redirect_url = '/admin-dashboard/' if (user.is_staff or user.is_superuser) else '/'
 
@@ -868,21 +1077,26 @@ def admin_dashboard_view(request):
 
 
 @api_view(['GET'])
+@staff_required_api
 def api_admin_users(request):
     """Get list of all registered users with search stats and premium status for Admin."""
-    if not request.user.is_authenticated or not (request.user.is_staff or request.user.is_superuser):
-        return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-
-    users = User.objects.all().order_by('-date_joined')
     today = timezone.now().date()
+    users = (
+        User.objects.all()
+        .select_related('profile')
+        .annotate(total_downloads=Count('download_records'))
+        .order_by('-date_joined')
+    )
+    trackers_today = dict(
+        DailySearchTracker.objects.filter(date=today, identifier__startswith='user_')
+        .values_list('identifier', 'search_count')
+    )
     user_list = []
 
     for u in users:
-        profile, _ = UserProfile.objects.get_or_create(user=u)
-        user_identifier = f"user_{u.id}"
-        tracker = DailySearchTracker.objects.filter(identifier=user_identifier, date=today).first()
-        search_count_today = tracker.search_count if tracker else 0
-        total_downloads = DownloadRecord.objects.filter(user_id__in=[u.email, u.username]).count()
+        profile = getattr(u, 'profile', None) or UserProfile.objects.get_or_create(user=u)[0]
+        search_count_today = trackers_today.get(f"user_{u.id}", 0)
+        total_downloads = u.total_downloads
 
         user_list.append({
             'id': u.id,
@@ -901,14 +1115,15 @@ def api_admin_users(request):
 
 
 @api_view(['POST'])
+@staff_required_api
 def api_admin_toggle_premium(request):
     """Toggle premium status for a user via Admin panel."""
-    if not request.user.is_authenticated or not (request.user.is_staff or request.user.is_superuser):
-        return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-
     user_id = request.data.get('user_id')
     is_premium = bool(request.data.get('is_premium'))
-    days = int(request.data.get('days') or 0)
+    try:
+        days = int(request.data.get('days') or 0)
+    except (TypeError, ValueError):
+        return Response({'error': 'days must be an integer.'}, status=status.HTTP_400_BAD_REQUEST)
 
     user = get_object_or_404(User, id=user_id)
     profile, _ = UserProfile.objects.get_or_create(user=user)
@@ -930,16 +1145,20 @@ def api_admin_toggle_premium(request):
 
 
 @api_view(['GET'])
+@staff_required_api
 def api_admin_history(request):
     """Get global download history for Admin panel with search filtering."""
-    if not request.user.is_authenticated or not (request.user.is_staff or request.user.is_superuser):
-        return Response({'error': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
-
     query = request.GET.get('query', '').strip()
-    records = DownloadRecord.objects.all()
+    records = DownloadRecord.objects.select_related('owner')
 
     if query:
-        records = records.filter(title__icontains=query) | records.filter(user_id__icontains=query) | records.filter(client_ip__icontains=query)
+        records = records.filter(
+            Q(title__icontains=query)
+            | Q(owner__email__icontains=query)
+            | Q(owner__username__icontains=query)
+            | Q(guest_id__icontains=query)
+            | Q(client_ip__icontains=query)
+        )
 
     records = records[:100]
 
@@ -952,7 +1171,7 @@ def api_admin_history(request):
             'download_url': r.download_url,
             'media_type': r.media_type,
             'format_label': r.format_label,
-            'user_id': r.user_id,
+            'user_id': r.owner_label,
             'client_ip': r.client_ip,
             'status': r.status,
             'created_at': timezone.localtime(r.created_at).strftime('%b %d, %Y %H:%M') if r.created_at else ''

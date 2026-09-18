@@ -8,6 +8,15 @@ from urllib.parse import urlparse, unquote
 from PIL import Image
 import img2pdf
 import yt_dlp
+from django.conf import settings
+
+
+# TLS verification for outbound requests. Some ISPs in blocked regions break TLS to
+# these hosts; set SSL_VERIFY=false in the environment to opt out rather than disabling
+# certificate checks for everyone.
+SSL_VERIFY = getattr(settings, 'SSL_VERIFY', True)
+
+SHORTENER_HOSTS = {'vm.tiktok.com', 'vt.tiktok.com', 'youtu.be', 't.co', 'bit.ly', 'tinyurl.com'}
 
 
 class InstagramFallbackError(Exception):
@@ -17,7 +26,7 @@ class InstagramFallbackError(Exception):
 class YtDlpService:
     YOUTUBE_EXTRACTOR_ARGS = {
         'youtube': {
-            'player_client': ['tv', 'android_vr', 'web_creator', 'ios', 'android'],
+            'player_client': ['ios', 'android', 'mweb'],
         }
     }
 
@@ -90,12 +99,11 @@ class YtDlpService:
         opts = {
             'quiet': True,
             'no_warnings': True,
-            'nocheckcertificate': True,
+            'nocheckcertificate': not SSL_VERIFY,
             'geo_bypass': True,
             'extractor_args': YtDlpService.YOUTUBE_EXTRACTOR_ARGS,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://www.instagram.com/',
             },
         }
         if os.path.exists(YtDlpService.COOKIES_FILE):
@@ -105,20 +113,73 @@ class YtDlpService:
     @staticmethod
     def _unshorten_url(url):
         """Expand short URLs like vm.tiktok.com, vt.tiktok.com, youtu.be, t.co."""
-        if any(domain in url for domain in ['vm.tiktok.com', 'vt.tiktok.com', 'youtu.be', 't.co', 'bit.ly', 'tinyurl.com']):
+        # Match on the exact hostname: a substring check ('t.co' in url) also matches
+        # test.com, cut.co.uk, etc.
+        try:
+            host = (urlparse(url).hostname or '').lower()
+        except ValueError:
+            return url
+        if host in SHORTENER_HOSTS:
             try:
                 resp = requests.head(
                     url,
                     allow_redirects=True,
                     headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
                     timeout=10,
-                    verify=False
+                    verify=SSL_VERIFY
                 )
                 if resp.url:
                     return resp.url
             except Exception:
                 pass
         return url
+
+    @staticmethod
+    def _get_best_thumbnail(thumbnails):
+        """Find the highest resolution thumbnail/photo URL even when width/height are None."""
+        if not thumbnails:
+            return {}
+
+        def score_thumb(t):
+            if not isinstance(t, dict):
+                return -1
+            w = t.get('width') or 0
+            h = t.get('height') or 0
+            url = t.get('url') or ''
+            if w and h:
+                return w * h
+            if not url:
+                return 0
+            # Meta/Instagram CDN original uncropped full-resolution photo tag
+            if 'dst-jpg' in url and not re.search(r'[sp]\d+x\d+', url):
+                return 100_000_000
+            dim_match = re.search(r'[sp](\d+)x(\d+)', url)
+            if dim_match:
+                return int(dim_match.group(1)) * int(dim_match.group(2))
+            any_dim = re.search(r'(\d{3,4})x(\d{3,4})', url)
+            if any_dim:
+                return int(any_dim.group(1)) * int(any_dim.group(2))
+            return 1
+
+        best = max(thumbnails, key=score_thumb)
+        w = best.get('width')
+        h = best.get('height')
+        url = best.get('url', '')
+        if (not w or not h) and url:
+            dim_match = re.search(r'(\d{3,4})x(\d{3,4})', url)
+            if dim_match:
+                w = int(dim_match.group(1))
+                h = int(dim_match.group(2))
+            elif 'dst-jpg' in url:
+                w = 1080
+                h = 1920
+
+        return {
+            'url': url,
+            'width': w or 1080,
+            'height': h or 1920,
+            'raw': best
+        }
 
     @staticmethod
     def _fetch_tiktok_fallback(url):
@@ -140,7 +201,7 @@ class YtDlpService:
                 data={'url': url, 'hd': 1},
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
                 timeout=12,
-                verify=False
+                verify=SSL_VERIFY
             )
             if resp.ok:
                 res = resp.json()
@@ -247,7 +308,7 @@ class YtDlpService:
                         # Extract highest-res photo in carousel entry
                         entry_thumbs = entry.get('thumbnails') or []
                         if entry_thumbs:
-                            best_thumb = max(entry_thumbs, key=lambda t: (t.get('width') or 0) * (t.get('height') or 0))
+                            best_thumb = YtDlpService._get_best_thumbnail(entry_thumbs)
                             thumb_url = best_thumb.get('url')
                             if thumb_url:
                                 w = best_thumb.get('width', 0)
@@ -269,43 +330,95 @@ class YtDlpService:
                     if full_info:
                         title = full_info.get('title', title)
                         thumbnail = full_info.get('thumbnail', thumbnail)
-                        uploader = full_info.get('uploader', uploader)
                         duration = full_info.get('duration', duration)
                         fallback_url = full_info.get('url', fallback_url)
+                        youtube_id = full_info.get('id') if ('youtube.com' in url or 'youtu.be' in url) else None
+                        embed_url = f"https://www.youtube.com/embed/{youtube_id}?autoplay=1&enablejsapi=1" if youtube_id else None
                         raw_formats = full_info.get('formats', [])
 
-                        seen_res = set()
+                        # Extract all audio formats and choose highest bitrate stream
+                        audio_formats = [
+                            f for f in raw_formats
+                            if (f.get('vcodec') == 'none' or not f.get('vcodec')) and f.get('acodec') not in ['none', None] and f.get('url')
+                        ]
+                        if audio_formats:
+                            best_audio_fmt = max(
+                                audio_formats,
+                                key=lambda a: (a.get('abr') or 0, a.get('tbr') or 0, a.get('filesize') or 0)
+                            )
+                            audio_url = best_audio_fmt.get('url')
+
+                        # Filter and deduplicate formats to prioritize highest qualities (8K, 4K, 2K, 1080p, 720p, etc.)
+                        best_by_height = {}
                         for f in raw_formats:
+                            height = f.get('height')
+                            ext = f.get('ext', 'mp4')
+                            f_url = f.get('url', '') or fallback_url
+                            if not height or height < 144 or not f_url:
+                                continue
+                            if ext not in ['mp4', 'webm', 'mkv']:
+                                continue
+
+                            filesize = f.get('filesize') or f.get('filesize_approx') or 0
+                            tbr = f.get('tbr') or 0
+                            # Prefer MP4 container over WEBM if available, then higher bitrate/filesize
+                            score = (1 if ext == 'mp4' else 0) * 1000000 + (filesize or (tbr * 1000) or 0)
+
+                            if height not in best_by_height or score > best_by_height[height]['score']:
+                                best_by_height[height] = {
+                                    'format': f,
+                                    'score': score
+                                }
+
+                        for height in sorted(best_by_height.keys(), reverse=True):
+                            f = best_by_height[height]['format']
                             format_id = f.get('format_id')
                             ext = f.get('ext', 'mp4')
                             vcodec = f.get('vcodec', 'none')
                             acodec = f.get('acodec', 'none')
-                            height = f.get('height')
                             filesize = f.get('filesize') or f.get('filesize_approx') or 0
                             download_url = f.get('url', '') or fallback_url
+                            has_audio = bool(acodec and acodec != 'none')
+                            res_label = f"{height}p"
 
-                            if height and height >= 144:
-                                res_label = f"{height}p"
-                                if res_label not in seen_res:
-                                    seen_res.add(res_label)
-                                    video_formats_local.append({
-                                        'format_id': format_id,
-                                        'resolution': res_label,
-                                        'height': height,
-                                        'ext': ext if ext in ['mp4', 'webm'] else 'mp4',
-                                        'filesize': filesize,
-                                        'filesize_mb': round(filesize / (1024 * 1024), 1) if filesize else 0,
-                                        'label': f"{res_label} ({ext.upper()})",
-                                        'download_url': download_url
-                                    })
+                            if height >= 4320:
+                                qual_tag = f"8K Ultra HD ({ext.upper()})"
+                            elif height >= 2160:
+                                qual_tag = f"4K Ultra HD ({ext.upper()})"
+                            elif height >= 1440:
+                                qual_tag = f"2K QHD ({ext.upper()})"
+                            elif height >= 1080:
+                                qual_tag = f"1080p Full HD ({ext.upper()})"
+                            elif height >= 720:
+                                qual_tag = f"720p HD ({ext.upper()})"
+                            elif height >= 480:
+                                qual_tag = f"480p ({ext.upper()})"
+                            elif height >= 360:
+                                qual_tag = f"360p ({ext.upper()})"
+                            else:
+                                qual_tag = f"{height}p ({ext.upper()})"
 
-                            if vcodec == 'none' and acodec != 'none' and f.get('url'):
-                                if not audio_url:
-                                    audio_url = f.get('url')
+                            video_formats_local.append({
+                                'format_id': format_id,
+                                'resolution': res_label,
+                                'height': height,
+                                'ext': ext if ext in ['mp4', 'webm'] else 'mp4',
+                                'filesize': filesize,
+                                'filesize_mb': round(filesize / (1024 * 1024), 1) if filesize else 0,
+                                'label': qual_tag,
+                                'has_audio': has_audio,
+                                'vcodec': vcodec,
+                                'acodec': acodec,
+                                'download_url': download_url
+                            })
+
+                        # Limit to top 5 highest video formats so total options with Audio Stream is max 6
+                        if video_formats_local:
+                            video_formats_local = video_formats_local[:5]
 
                         # Single photo thumbnail fallback
                         if not video_formats_local and full_info.get('thumbnails'):
-                            best_thumb = max(full_info['thumbnails'], key=lambda t: (t.get('width') or 0) * (t.get('height') or 0))
+                            best_thumb = YtDlpService._get_best_thumbnail(full_info['thumbnails'])
                             if best_thumb.get('url'):
                                 video_formats_local.append({
                                     'format_id': 'photo_hq',
@@ -376,7 +489,9 @@ class YtDlpService:
                     'video_formats': video_formats_local,
                     'audio_url': audio_url,
                     'fallback_url': fallback_url,
-                    'original_url': url
+                    'original_url': url,
+                    'youtube_id': youtube_id if 'youtube_id' in locals() else None,
+                    'embed_url': embed_url if 'embed_url' in locals() else None
                 }
         except Exception as e:
             if 'instagram.com' in url:
@@ -418,7 +533,7 @@ class YtDlpService:
                         'Accept-Language': 'en-US,en;q=0.9',
                     },
                     timeout=12,
-                    verify=False
+                    verify=SSL_VERIFY
                 )
                 if resp.ok:
                     page_html = resp.text
@@ -484,8 +599,12 @@ class YtDlpService:
 
 
     @staticmethod
-    def download_media(url, format_id, is_audio, output_dir):
-        """Download video or audio using yt_dlp to local output directory."""
+    def download_media(url, format_id, is_audio, output_dir, max_height=None):
+        """Download video or audio using yt_dlp to local output directory.
+
+        `max_height` caps the video resolution server-side (used to enforce the premium
+        tier), regardless of which format_id the client asked for.
+        """
         if format_id and str(format_id).startswith('ig_fallback'):
             # Directly stream download fallback URLs
             res = FileDownloadService.download_direct_file(url, output_dir)
@@ -509,10 +628,13 @@ class YtDlpService:
                 'postprocessors': [],
             })
         else:
-            if format_id and format_id not in ['photo_default', 'ig_fallback_photo', 'ig_fallback_video']:
-                ydl_opts['format'] = format_id
+            cap = f'[height<={int(max_height)}]' if max_height else ''
+            default_fmt = f'bestvideo{cap}[ext=mp4]+bestaudio[ext=m4a]/best{cap}[ext=mp4]/best{cap}'
+            if format_id and re.fullmatch(r'[A-Za-z0-9_\-+]+', str(format_id)) and format_id not in ['photo_default', 'ig_fallback_photo', 'ig_fallback_video']:
+                # Requested id first, capped; fall back to the best allowed format.
+                ydl_opts['format'] = f'{format_id}{cap}/{default_fmt}'
             else:
-                ydl_opts['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+                ydl_opts['format'] = default_fmt
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -539,15 +661,9 @@ class YtDlpService:
                     'duration': info.get('duration', 0)
                 }
         except Exception:
-            # Fallback to direct HTTP download if yt-dlp failed
-            res = FileDownloadService.download_direct_file(url, output_dir)
-            return {
-                'title': res['file_name'],
-                'file_name': res['file_name'],
-                'file_path': res['file_path'],
-                'file_size': res['file_size'],
-                'duration': 0
-            }
+            # Let the caller decide what to do. Falling back to a raw HTTP download of a
+            # page URL (e.g. youtube.com/watch?v=...) just saved the HTML as a .bin file.
+            raise
 
     @staticmethod
     def _format_duration(seconds):
@@ -562,8 +678,33 @@ class YtDlpService:
 
 class FileDownloadService:
     @staticmethod
+    def is_safe_url(url):
+        """Validate URL to prevent SSRF against internal/loopback/cloud metadata services."""
+        if not url or not isinstance(url, str):
+            return False
+        try:
+            import ipaddress
+            import socket
+            parsed = urlparse(url.strip())
+            if parsed.scheme not in ('http', 'https'):
+                return False
+            hostname = parsed.hostname
+            if not hostname or hostname.lower() in ('localhost', '127.0.0.1', '::1', '0.0.0.0', '169.254.169.254'):
+                return False
+            ip_str = socket.gethostbyname(hostname)
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def download_direct_file(url, output_dir):
         """Download file directly from HTTP/HTTPS URL with streaming."""
+        if not FileDownloadService.is_safe_url(url):
+            raise ValueError("Direct download refused: Invalid or private target URL.")
+
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }

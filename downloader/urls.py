@@ -10,6 +10,7 @@ urlpatterns = [
     path('admin-dashboard/', views.admin_dashboard_view, name='admin_dashboard'),
     path('download/<str:record_id>/', views.download_file_view, name='download_file'),
     path('api/inspect/', views.api_inspect, name='api_inspect'),
+    path('api/download-media/', views.api_download_media_stream, name='api_download_media_stream'),
     path('api/history/', views.api_history, name='api_history'),
     path('api/history/delete/', views.api_delete_history, name='api_delete_history'),
     path('api/history/clear/', views.api_clear_history, name='api_clear_history'),
