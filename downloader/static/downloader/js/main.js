@@ -312,23 +312,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnOpenDirectLink = document.getElementById('btnOpenDirectLink');
   const selectedFormatLabel = document.getElementById('selectedFormatLabel');
 
-  function updateDirectLink(url, label, fmtId) {
+  function updateDirectLink(url, label) {
     if (!url) return;
     if (directLinkInput) directLinkInput.value = url;
 
-    const title = (currentInspectedData && currentInspectedData.title) ? currentInspectedData.title : 'nexusdown_media';
-    const originalUrl = (currentInspectedData && currentInspectedData.original_url) ? currentInspectedData.original_url : '';
-    const isAudio = selectedMediaType === 'audio' || (label && label.toLowerCase().includes('audio'));
-    const isPhoto = selectedMediaType === 'image' || (label && label.toLowerCase().includes('photo'));
-    const ext = isAudio ? 'mp3' : (isPhoto ? 'jpg' : 'mp4');
-    const formatIdParam = fmtId || selectedFormatId || '';
-
-    // Route through streaming/download proxy to bypass 403 Access Denied and trigger direct file download
-    const streamDownloadUrl = `/api/download-media/?url=${encodeURIComponent(url)}&original_url=${encodeURIComponent(originalUrl)}&format_id=${encodeURIComponent(formatIdParam)}&is_audio=${isAudio}&filename=${encodeURIComponent(title)}&ext=${ext}`;
-
     if (btnOpenDirectLink) {
-      btnOpenDirectLink.href = streamDownloadUrl;
-      btnOpenDirectLink.setAttribute('download', `${title}.${ext}`);
+      btnOpenDirectLink.href = url;
     }
     if (selectedFormatLabel) selectedFormatLabel.textContent = label || '';
     if (directLinkContainer) directLinkContainer.style.display = 'block';
@@ -1056,7 +1045,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <td data-label="Format">${escapeHtml(item.format_label || 'Auto')}</td>
             <td data-label="Harakat">
               <div class="history-row-actions">
-                ${(item.download_url || (item.original_url && (item.original_url.startsWith('http://') || item.original_url.startsWith('https://')))) ? `<a href="${escapeHtml(item.download_url || item.original_url)}" target="_blank" rel="noopener noreferrer" class="btn-file-dl">📥 Yuklab olish</a>` : ''}
+                ${(item.original_url && (item.original_url.startsWith('http://') || item.original_url.startsWith('https://'))) ? `<a href="${escapeHtml(item.original_url)}" target="_blank" rel="noopener noreferrer" class="btn-file-dl">🔗 Ochish</a>` : ''}
                 <button class="btn-delete-row" data-id="${item.id}" type="button" title="O'chirish">
                   🗑️
                 </button>
