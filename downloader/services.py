@@ -58,9 +58,20 @@ class YtDlpService:
     # reachable at its default http://127.0.0.1:4416 - run it yourself for local
     # dev; without it (or without cookies) this just degrades to legacy 360p,
     # same as before. ios/android/mweb stay as anonymous fallbacks.
+    #
+    # innertube_host: yt-dlp's own innertube API calls normally go to
+    # www.youtube.com. Hosts with restricted outbound internet access (e.g.
+    # PythonAnywhere's free tier, which only allows a fixed domain allowlist -
+    # youtube.com isn't on it, but googlevideo.com/googleapis.com are) can't
+    # reach that host at all and fail with a proxy-level connection error before
+    # yt-dlp even gets a chance to run. youtubei.googleapis.com is YouTube's own
+    # alternate hostname for the same API and happens to be allowlisted there,
+    # so pointing at it routes around that restriction. No effect anywhere with
+    # unrestricted internet access.
     YOUTUBE_EXTRACTOR_ARGS = {
         'youtube': {
             'player_client': ['web', 'ios', 'android', 'mweb'],
+            'innertube_host': ['youtubei.googleapis.com'],
         }
     }
 
