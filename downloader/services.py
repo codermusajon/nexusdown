@@ -1,4 +1,6 @@
 import os
+import glob
+import shutil
 import uuid
 import re
 import html
@@ -9,6 +11,31 @@ from PIL import Image
 import img2pdf
 import yt_dlp
 from django.conf import settings
+
+
+def _find_ffmpeg():
+    """Locate the ffmpeg binary. shutil.which() alone misses installs done via winget/choco
+    mid-session, since this process's PATH was captured at launch and a package manager only
+    updates the registry - the running process never sees it without a full restart. Checking
+    the common Windows install locations directly sidesteps that timing issue."""
+    found = shutil.which('ffmpeg')
+    if found:
+        return found
+    candidates = [
+        r'C:\ffmpeg\bin\ffmpeg.exe',
+        r'C:\ProgramData\chocolatey\bin\ffmpeg.exe',
+        *glob.glob(os.path.expandvars(
+            r'%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-*-full_build\bin\ffmpeg.exe'
+        )),
+    ]
+    return next((c for c in candidates if os.path.exists(c)), None)
+
+
+# ffmpeg is required to merge a video-only adaptive stream (1080p+) with a
+# separate audio track. Without it, an explicit video-only format_id downloads
+# silent - see YtDlpService.download_media.
+FFMPEG_PATH = _find_ffmpeg()
+FFMPEG_AVAILABLE = FFMPEG_PATH is not None
 
 
 # TLS verification for outbound requests. Some ISPs in blocked regions break TLS to
@@ -24,9 +51,16 @@ class InstagramFallbackError(Exception):
 
 
 class YtDlpService:
+    # 'web' unlocks the full adaptive ladder (1080p+ video-only + separate audio),
+    # but YouTube gates those formats behind a GVS PO Token. yt-dlp mints one
+    # automatically from COOKIES_FILE via a local bgutil-ytdlp-pot-provider server
+    # (see https://github.com/Brainicism/bgutil-ytdlp-pot-provider) if one is
+    # reachable at its default http://127.0.0.1:4416 - run it yourself for local
+    # dev; without it (or without cookies) this just degrades to legacy 360p,
+    # same as before. ios/android/mweb stay as anonymous fallbacks.
     YOUTUBE_EXTRACTOR_ARGS = {
         'youtube': {
-            'player_client': ['ios', 'android', 'mweb'],
+            'player_client': ['web', 'ios', 'android', 'mweb'],
         }
     }
 
@@ -105,9 +139,15 @@ class YtDlpService:
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             },
+            # Needed to solve YouTube's 'n' signature challenge for the 'web' client.
+            # Degrades to a warning (not an error) if Node isn't installed.
+            'js_runtimes': {'node': {}},
+            'remote_components': ['ejs:npm'],
         }
         if os.path.exists(YtDlpService.COOKIES_FILE):
             opts['cookiefile'] = YtDlpService.COOKIES_FILE
+        if FFMPEG_PATH:
+            opts['ffmpeg_location'] = FFMPEG_PATH
         return opts
 
     @staticmethod
@@ -327,6 +367,10 @@ class YtDlpService:
                 # 2nd pass: Full process inspection for single videos/audio if no carousel entries found
                 if not video_formats_local:
                     full_info = ydl.extract_info(url, download=False)
+                    if not full_info:
+                        # YouTube's PO-token minting is flaky under repeat/concurrent hits on
+                        # the same video id - one quiet retry recovers most of these.
+                        full_info = ydl.extract_info(url, download=False)
                     if full_info:
                         title = full_info.get('title', title)
                         thumbnail = full_info.get('thumbnail', thumbnail)
@@ -361,8 +405,16 @@ class YtDlpService:
 
                             filesize = f.get('filesize') or f.get('filesize_approx') or 0
                             tbr = f.get('tbr') or 0
-                            # Prefer MP4 container over WEBM if available, then higher bitrate/filesize
-                            score = (1 if ext == 'mp4' else 0) * 1000000 + (filesize or (tbr * 1000) or 0)
+                            has_audio_track = bool(f.get('acodec') and f.get('acodec') != 'none')
+                            # Prefer a muxed (audio-included) format at this height over a
+                            # video-only adaptive stream, so picking it by format_id alone
+                            # doesn't silently download a video with no sound. Then prefer
+                            # MP4 container over WEBM, then higher bitrate/filesize.
+                            score = (
+                                (1 if has_audio_track else 0) * 10**12
+                                + (1 if ext == 'mp4' else 0) * 1000000
+                                + (filesize or (tbr * 1000) or 0)
+                            )
 
                             if height not in best_by_height or score > best_by_height[height]['score']:
                                 best_by_height[height] = {
@@ -380,6 +432,12 @@ class YtDlpService:
                             download_url = f.get('url', '') or fallback_url
                             has_audio = bool(acodec and acodec != 'none')
                             res_label = f"{height}p"
+
+                            # Above 360p, YouTube only offers video-only adaptive streams.
+                            # Merging in a separate audio track needs ffmpeg on the server;
+                            # without it, skip so we never offer a silent "download".
+                            if not has_audio and not FFMPEG_AVAILABLE:
+                                continue
 
                             if height >= 4320:
                                 qual_tag = f"8K Ultra HD ({ext.upper()})"
@@ -629,12 +687,28 @@ class YtDlpService:
             })
         else:
             cap = f'[height<={int(max_height)}]' if max_height else ''
-            default_fmt = f'bestvideo{cap}[ext=mp4]+bestaudio[ext=m4a]/best{cap}[ext=mp4]/best{cap}'
-            if format_id and re.fullmatch(r'[A-Za-z0-9_\-+]+', str(format_id)) and format_id not in ['photo_default', 'ig_fallback_photo', 'ig_fallback_video']:
-                # Requested id first, capped; fall back to the best allowed format.
-                ydl_opts['format'] = f'{format_id}{cap}/{default_fmt}'
-            else:
+            # bestvideo+bestaudio requires ffmpeg to merge; without it, drop straight to
+            # a single already-muxed 'best' pick so we don't hard-error mid-download.
+            default_fmt = (
+                f'bestvideo{cap}[ext=mp4]+bestaudio[ext=m4a]/best{cap}[ext=mp4]/best{cap}'
+                if FFMPEG_AVAILABLE else f'best{cap}[ext=mp4]/best{cap}'
+            )
+            requested_ok = (
+                format_id and re.fullmatch(r'[A-Za-z0-9_\-+]+', str(format_id))
+                and format_id not in ['photo_default', 'ig_fallback_photo', 'ig_fallback_video']
+            )
+            if not requested_ok:
                 ydl_opts['format'] = default_fmt
+            elif FFMPEG_AVAILABLE:
+                # format_id may be a video-only adaptive stream (1080p+); merge in
+                # audio only when it actually needs it ([acodec=none]).
+                ydl_opts['format'] = (
+                    f'{format_id}{cap}[acodec=none]+bestaudio[ext=m4a]/{format_id}{cap}/{default_fmt}'
+                )
+            else:
+                # No ffmpeg: use the requested id as-is (already muxed - inspect_url
+                # never offers a video-only id when ffmpeg is unavailable).
+                ydl_opts['format'] = f'{format_id}{cap}/{default_fmt}'
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

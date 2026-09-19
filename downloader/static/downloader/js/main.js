@@ -236,6 +236,15 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshHistory();
 
   // URL Inspector (Media / Video / Audio)
+  if (mediaUrlInput && btnInspect) {
+    mediaUrlInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        btnInspect.click();
+      }
+    });
+  }
+
   if (btnInspect) {
     btnInspect.addEventListener('click', async () => {
       const url = mediaUrlInput ? mediaUrlInput.value.trim() : '';

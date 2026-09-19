@@ -24,6 +24,10 @@ cookies.txt
 .env
 .env.*
 
+# jjson.py script output
+vfile.json
+/downloads/
+
 # IDE & OS files
 .vscode/
 .idea/

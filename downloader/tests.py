@@ -42,6 +42,7 @@ class InstagramFallbackParsingTests(SimpleTestCase):
 
 
 class FormatInspectionTests(SimpleTestCase):
+    @patch('downloader.services.FFMPEG_AVAILABLE', True)
     @patch('yt_dlp.YoutubeDL')
     def test_inspect_url_populates_video_formats(self, mock_yt_dlp):
         mock_instance = mock_yt_dlp.return_value.__enter__.return_value
@@ -88,6 +89,81 @@ class FormatInspectionTests(SimpleTestCase):
         self.assertEqual(len(res['video_formats']), 2)
         self.assertEqual(res['video_formats'][0]['resolution'], '1080p')
         self.assertEqual(res['video_formats'][1]['resolution'], '720p')
+
+    @patch('downloader.services.FFMPEG_AVAILABLE', False)
+    @patch('yt_dlp.YoutubeDL')
+    def test_inspect_url_hides_silent_formats_without_ffmpeg(self, mock_yt_dlp):
+        """Video-only adaptive streams (1080p/720p here) need ffmpeg to gain audio;
+        without it they must never be offered as a "download", since that would
+        deliver a silent file. A muxed format with audio is still fine to skip -
+        e.g. if a video truly only has adaptive streams, there's nothing safe to offer."""
+        mock_instance = mock_yt_dlp.return_value.__enter__.return_value
+        mock_instance.extract_info.return_value = {
+            'title': 'Test Video',
+            'uploader': 'Test User',
+            'duration': 120,
+            'thumbnail': 'https://example.com/thumb.jpg',
+            'url': 'https://example.com/fallback.mp4',
+            'formats': [
+                {
+                    'format_id': '137',
+                    'ext': 'mp4',
+                    'vcodec': 'avc1',
+                    'acodec': 'none',
+                    'height': 1080,
+                    'filesize': 10485760,
+                    'url': 'https://example.com/1080p.mp4'
+                },
+                {
+                    'format_id': '18',
+                    'ext': 'mp4',
+                    'vcodec': 'avc1',
+                    'acodec': 'mp4a.40.2',
+                    'height': 360,
+                    'filesize': 2097152,
+                    'url': 'https://example.com/360p.mp4'
+                },
+            ]
+        }
+
+        res = YtDlpService.inspect_url('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+
+        self.assertEqual(res['status'], 'success')
+        self.assertEqual(len(res['video_formats']), 1)
+        self.assertEqual(res['video_formats'][0]['format_id'], '18')
+
+    @patch('yt_dlp.YoutubeDL')
+    def test_inspect_url_retries_once_when_extraction_returns_nothing(self, mock_yt_dlp):
+        """YouTube's PO-token minting is flaky under repeated hits on the same video id:
+        with ignoreerrors=True, a failed pass returns None instead of raising. One retry
+        recovers most of these instead of silently degrading to a photo-only result."""
+        mock_instance = mock_yt_dlp.return_value.__enter__.return_value
+        mock_instance.extract_info.side_effect = [
+            {},  # 1st pass (process=False): no entries, triggers 2nd pass
+            None,  # 2nd pass: transient PO-token failure
+            {  # retry of 2nd pass: succeeds
+                'title': 'Test Video',
+                'uploader': 'Test User',
+                'duration': 120,
+                'thumbnail': 'https://example.com/thumb.jpg',
+                'url': 'https://example.com/fallback.mp4',
+                'formats': [{
+                    'format_id': '18',
+                    'ext': 'mp4',
+                    'vcodec': 'avc1',
+                    'acodec': 'mp4a.40.2',
+                    'height': 360,
+                    'filesize': 2097152,
+                    'url': 'https://example.com/360p.mp4'
+                }],
+            },
+        ]
+
+        res = YtDlpService.inspect_url('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+
+        self.assertEqual(res['status'], 'success')
+        self.assertEqual(len(res['video_formats']), 1)
+        self.assertEqual(res['video_formats'][0]['format_id'], '18')
 
 
 class DownloaderViewTests(TestCase):
@@ -839,6 +915,7 @@ class GoogleAccessTokenBindingTests(SimpleTestCase):
 
 
 class DownloadMediaFormatSelectionTests(SimpleTestCase):
+    @patch('downloader.services.FFMPEG_AVAILABLE', True)
     @patch('downloader.services.yt_dlp.YoutubeDL')
     def test_max_height_caps_requested_format(self, mock_ydl):
         instance = mock_ydl.return_value.__enter__.return_value
@@ -847,8 +924,26 @@ class DownloadMediaFormatSelectionTests(SimpleTestCase):
         with patch('downloader.services.os.listdir', return_value=[]):
             YtDlpService.download_media('https://youtube.com/watch?v=1', '313', False, '/tmp', max_height=1080)
         fmt = mock_ydl.call_args.args[0]['format']
-        self.assertTrue(fmt.startswith('313[height<=1080]/'))
+        # Requested id capped, merged with audio only if it's actually video-only,
+        # then falls back to the requested id as-is, then to a generic best pick.
+        self.assertTrue(fmt.startswith('313[height<=1080][acodec=none]+bestaudio'))
+        self.assertIn('313[height<=1080]/', fmt)
         self.assertIn('bestvideo[height<=1080]', fmt)
+
+    @patch('downloader.services.FFMPEG_AVAILABLE', False)
+    @patch('downloader.services.yt_dlp.YoutubeDL')
+    def test_max_height_caps_requested_format_without_ffmpeg(self, mock_ydl):
+        """Without ffmpeg there's no way to merge a video-only pick with audio, so
+        the selector must never contain a '+' merge - just the requested id, capped,
+        falling back to a single already-muxed 'best' pick."""
+        instance = mock_ydl.return_value.__enter__.return_value
+        instance.extract_info.return_value = {'title': 'x'}
+        instance.prepare_filename.return_value = 'nonexistent.mp4'
+        with patch('downloader.services.os.listdir', return_value=[]):
+            YtDlpService.download_media('https://youtube.com/watch?v=1', '313', False, '/tmp', max_height=1080)
+        fmt = mock_ydl.call_args.args[0]['format']
+        self.assertEqual(fmt, '313[height<=1080]/best[height<=1080][ext=mp4]/best[height<=1080]')
+        self.assertNotIn('+', fmt)
 
     @patch('downloader.services.yt_dlp.YoutubeDL')
     def test_yt_dlp_failure_propagates_instead_of_downloading_page_html(self, mock_ydl):
