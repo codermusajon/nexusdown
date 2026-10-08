@@ -1,13 +1,23 @@
 {% load static tz %}
 <!DOCTYPE html>
-<html lang="en">
+<html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0a0d14">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>NexusDown - Universal Media & Fayl Yuklovchi</title>
+  <meta name="description" content="YouTube, Instagram va TikTok videolarini, audio va rasmlarni bepul yuklab oling. Rasmlarni PDF ga o'tkazing.">
+  <link rel="canonical" href="{{ request.scheme }}://{{ request.get_host }}/">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="NexusDown">
+  <meta property="og:title" content="NexusDown - Universal Media & Fayl Yuklovchi">
+  <meta property="og:description" content="YouTube, Instagram va TikTok videolarini, audio va rasmlarni bepul yuklab oling.">
+  <meta property="og:url" content="{{ request.scheme }}://{{ request.get_host }}/">
+  <meta property="og:image" content="{{ request.scheme }}://{{ request.get_host }}{% static 'newlogo.png' %}">
+  <meta property="og:locale" content="uz_UZ">
+  <meta name="twitter:card" content="summary">
 
   <!-- Favicon -->
   <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
@@ -25,7 +35,7 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!-- Custom Stylesheet -->
-  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}?v=2.5">
+  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}?v=2.6">
 </head>
 <body>
 
@@ -121,11 +131,6 @@
             </div>
           </div>
         </div>
-
-        <div class="badge-live">
-          <div class="pulse-dot"></div>
-          <span class="badge-text">Django 6</span>
-        </div>
       </div>
     </div>
   </header>
@@ -171,7 +176,7 @@
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>
-            <input type="url" id="mediaUrlInput" class="url-input" placeholder="YouTube, Instagram, TikTok video url..." autocomplete="off">
+            <input type="url" id="mediaUrlInput" class="url-input" placeholder="Video havolasini qo'ying" autocomplete="off">
             <button id="btnPasteMediaUrl" class="btn-paste-input" type="button" title="Vaqtincha xotiradan qo'yish">
               📋 Paste
             </button>
@@ -299,8 +304,21 @@
           <p class="card-section-desc">JPG, PNG, WebP rasmlarni bitta PDF hujjatiga aylantiring, tartiblang, burang va moslashtiring.</p>
         </div>
 
+        <!-- Dropzone Area -->
+        <div id="dropzone" class="dropzone">
+          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+            <circle cx="8.5" cy="8.5" r="1.5"/>
+            <polyline points="21 15 16 10 5 21"/>
+          </svg>
+          <h4 class="dropzone-title">Rasmlarni bu yerga tashlang yoki bosing</h4>
+          <p class="dropzone-sub">PNG, JPG, JPEG, WEBP formatlarini yuklang. Bir nechta rasmni tanlashingiz mumkin.</p>
+          <input type="file" id="imageFileInput" multiple accept="image/*" style="display: none;">
+        </div>
+
         <!-- Settings & Options Panel -->
-        <div class="converter-options-panel">
+        <details class="converter-options-panel">
+          <summary class="converter-options-summary">⚙️ Sozlamalar <span class="summary-hint">(format, o'lcham, sifat)</span></summary>
           <div class="options-group-row">
             <!-- Format Select -->
             <div class="option-field">
@@ -374,19 +392,7 @@
               <span>Sahifa raqamlarini pastda ko'rsatish (Page 1 of N)</span>
             </label>
           </div>
-        </div>
-
-        <!-- Dropzone Area -->
-        <div id="dropzone" class="dropzone">
-          <svg class="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
-            <circle cx="8.5" cy="8.5" r="1.5"/>
-            <polyline points="21 15 16 10 5 21"/>
-          </svg>
-          <h4 class="dropzone-title">Rasmlarni bu yerga tashlang yoki bosing</h4>
-          <p class="dropzone-sub">PNG, JPG, JPEG, WEBP formatlarini yuklang. Bir nechta rasmni tanlashingiz mumkin.</p>
-          <input type="file" id="imageFileInput" multiple accept="image/*" style="display: none;">
-        </div>
+        </details>
 
         <!-- Batch Manager Toolbar & Image Grid Container (Shows when images uploaded) -->
         <div id="converterManagerSection" class="converter-manager-section" style="display: none;">
@@ -546,8 +552,8 @@
               </svg>
             </div>
             <div class="admin-detail-content" style="display: flex; flex-direction: column; gap: 2px;">
-              <span class="admin-detail-label">Yoshi</span>
-              <span class="admin-detail-value">{{ current_year }}da</span>
+              <span class="admin-detail-label">Tug'ilgan yili</span>
+              <span class="admin-detail-value">2006</span>
             </div>
           </div>
 
@@ -571,7 +577,7 @@
   </main>
 
   <footer class="app-footer">
-    NexusDown Media Engine • Built with Django 6 & yt-dlp
+    NexusDown Media Engine • <span class="nowrap">Built with Django 6</span> &amp; <span class="nowrap">yt-dlp</span>
   </footer>
 
 

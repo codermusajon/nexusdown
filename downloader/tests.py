@@ -1,7 +1,9 @@
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase
+from django.contrib.auth.models import User
+from django.core.cache import cache
+from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -952,3 +954,71 @@ class DownloadMediaFormatSelectionTests(SimpleTestCase):
             with self.assertRaises(RuntimeError):
                 YtDlpService.download_media('https://youtube.com/watch?v=1', '137', False, '/tmp')
             direct.assert_not_called()
+
+
+class ClientIpTests(SimpleTestCase):
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    def test_prefers_proxy_set_real_ip_over_spoofable_forwarded_for(self):
+        req = self.factory.get('/', HTTP_X_REAL_IP='203.0.113.7', HTTP_X_FORWARDED_FOR='1.2.3.4')
+        self.assertEqual(downloader_views.get_client_ip(req), '203.0.113.7')
+
+    def test_uses_last_forwarded_hop_not_client_supplied_first(self):
+        req = self.factory.get('/', HTTP_X_FORWARDED_FOR='6.6.6.6, 203.0.113.9')
+        self.assertEqual(downloader_views.get_client_ip(req), '203.0.113.9')
+
+    def test_falls_back_to_remote_addr(self):
+        req = self.factory.get('/', REMOTE_ADDR='198.51.100.1')
+        self.assertEqual(downloader_views.get_client_ip(req), '198.51.100.1')
+
+
+class LoginLockoutTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.url = reverse('downloader:api_auth_login')
+        User.objects.create_user(username='victim', email='victim@example.com', password='correct-pass')
+
+    def tearDown(self):
+        cache.clear()
+
+    def _login(self, password, ip='10.0.0.1', login_id='victim'):
+        return self.client.post(self.url, {'login_id': login_id, 'password': password}, REMOTE_ADDR=ip)
+
+    def test_locks_after_max_failures_even_with_correct_password(self):
+        for _ in range(downloader_views.LOGIN_MAX_FAILURES):
+            self.assertEqual(self._login('wrong').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._login('correct-pass').status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_account_lock_applies_across_ips(self):
+        for i in range(downloader_views.LOGIN_MAX_FAILURES):
+            self._login('wrong', ip=f'10.0.1.{i}')
+        self.assertEqual(self._login('correct-pass', ip='10.0.2.1').status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_ip_lock_applies_across_accounts(self):
+        for i in range(downloader_views.LOGIN_MAX_FAILURES):
+            self._login('wrong', login_id=f'nobody{i}')
+        self.assertEqual(self._login('correct-pass').status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_successful_login_resets_account_counter(self):
+        for i in range(downloader_views.LOGIN_MAX_FAILURES - 1):
+            self._login('wrong', ip=f'10.0.3.{i}')
+        self.assertEqual(self._login('correct-pass', ip='10.0.4.1').status_code, status.HTTP_200_OK)
+        self.client.logout()
+        self.assertEqual(self._login('wrong', ip='10.0.4.2').status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(self._login('correct-pass', ip='10.0.4.3').status_code, status.HTTP_200_OK)
+
+
+class SeoAndMarkupTests(TestCase):
+    def test_robots_txt(self):
+        response = self.client.get('/robots.txt')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'text/plain')
+        self.assertContains(response, 'Disallow: /api/')
+
+    def test_index_is_uzbek_zoomable_and_has_meta(self):
+        response = self.client.get(reverse('downloader:index'))
+        self.assertContains(response, '<html lang="uz">')
+        self.assertNotContains(response, 'user-scalable=no')
+        self.assertContains(response, '<meta name="description"')
+        self.assertContains(response, 'property="og:image"')

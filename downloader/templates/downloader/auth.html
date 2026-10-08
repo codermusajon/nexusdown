@@ -3,7 +3,7 @@
 <html lang="uz">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="theme-color" content="#0a0d14">
   <title>Kirish va Ro'yxatdan o'tish - NexusDown</title>
 
@@ -23,7 +23,7 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
 
   <!-- Stylesheet -->
-  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}">
+  <link rel="stylesheet" href="{% static 'downloader/css/style.css' %}?v=2.6">
 </head>
 <body class="auth-body">
 
@@ -176,12 +176,20 @@
           <div class="form-group">
             <label for="regFirstName" class="form-label">Ism</label>
             <div class="input-icon-wrapper">
+              <svg class="input-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
               <input type="text" id="regFirstName" class="form-input" placeholder="Ali" autocomplete="given-name">
             </div>
           </div>
           <div class="form-group">
             <label for="regLastName" class="form-label">Familiya</label>
             <div class="input-icon-wrapper">
+              <svg class="input-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
               <input type="text" id="regLastName" class="form-input" placeholder="Valiyev" autocomplete="family-name">
             </div>
           </div>

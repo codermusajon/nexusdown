@@ -5,6 +5,7 @@ app_name = 'downloader'
 
 urlpatterns = [
     path('', views.index_view, name='index'),
+    path('robots.txt', views.robots_txt_view, name='robots_txt'),
     path('login/', views.login_view, name='login'),
     path('signup/', views.signup_view, name='signup'),
     path('admin-dashboard/', views.admin_dashboard_view, name='admin_dashboard'),

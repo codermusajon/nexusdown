@@ -202,20 +202,6 @@ body {
   white-space: nowrap;
 }
 
-.badge-live {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(16, 185, 129, 0.12);
-  border: 1px solid rgba(16, 185, 129, 0.3);
-  color: var(--accent-emerald);
-  padding: 4px 10px;
-  border-radius: var(--radius-full);
-  font-size: 0.76rem;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
 .pulse-dot {
   width: 7px;
   height: 7px;
@@ -1159,6 +1145,10 @@ body {
   margin-top: auto;
 }
 
+.nowrap {
+  white-space: nowrap;
+}
+
 /* ==========================================================================
    MOBILE & TABLET RESPONSIVE MEDIA QUERIES
    ========================================================================== */
@@ -1199,14 +1189,6 @@ body {
 
   .brand-title {
     font-size: 1.2rem;
-  }
-
-  .badge-live {
-    padding: 3px 8px;
-  }
-
-  .badge-text {
-    font-size: 0.72rem;
   }
 
   .main-wrapper {
@@ -1320,6 +1302,15 @@ body {
 
   .history-table td[data-label="Sarlavha & Sana"]::before {
     margin-bottom: 4px;
+  }
+
+  .history-table td.empty-history-cell {
+    display: block;
+    text-align: center;
+  }
+
+  .history-table td.empty-history-cell::before {
+    content: none;
   }
 
   .photo-gallery-grid {
@@ -2268,6 +2259,42 @@ body {
   backdrop-filter: blur(8px);
 }
 
+.converter-options-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-primary);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  margin: -12px 0;
+}
+
+.converter-options-summary::-webkit-details-marker {
+  display: none;
+}
+
+.converter-options-summary::after {
+  content: "▾";
+  margin-left: auto;
+  transition: transform 0.2s ease;
+}
+
+.converter-options-panel[open] > .converter-options-summary {
+  margin-bottom: 16px;
+}
+
+.converter-options-panel[open] > .converter-options-summary::after {
+  transform: rotate(180deg);
+}
+
+.summary-hint {
+  font-weight: 400;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
 .options-group-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -2807,16 +2834,12 @@ body {
     height: 18px;
   }
 
-  .badge-live {
-    display: none !important;
-  }
-
-  .nav-admin-text {
+  /* Icon-only buttons were unreadable and under 44px. Keep one labelled "Kirish"
+     button; signup and Google sign-in are both offered on the /login/ page. */
+  .nav-admin-btn,
+  .btn-nav-signup,
+  .btn-google-auth {
     display: none;
-  }
-
-  .nav-admin-btn {
-    padding: 6px 8px;
   }
 
   .search-limit-pill {
@@ -2826,20 +2849,15 @@ body {
     gap: 3px;
   }
 
-  .btn-nav-login, .btn-nav-signup {
-    padding: 5px 9px;
-    font-size: 0.78rem;
-    gap: 4px;
+  .btn-nav-login {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 0.88rem;
   }
 
-  .signup-btn-text {
-    display: none;
-  }
-
-  .btn-google-auth {
-    width: 32px;
-    height: 32px;
-    padding: 6px;
+  .btn-logout {
+    width: 36px;
+    height: 36px;
   }
 
   .user-profile-badge {
@@ -2889,9 +2907,16 @@ body {
     gap: 10px;
   }
 
+  /* >=16px stops iOS Safari auto-zooming on focus now that pinch-zoom is allowed. */
+  .url-input,
+  .form-input,
+  .converter-select,
+  .admin-search-input {
+    font-size: 16px;
+  }
+
   .url-input {
     padding: 12px 85px 12px 38px;
-    font-size: 0.88rem;
     min-height: 44px;
   }
 
@@ -2972,10 +2997,7 @@ body {
     font-size: 1.05rem;
   }
 
-  /* Safety net: the auth/quota pills in .header-right can still add up to more
-     than the viewport even after the 768px shrink pass above (e.g. logged-out
-     state renders Admin + quota + Kirish + Ro'yxatdan o'tish + Google all at
-     once). Let it wrap to a second row instead of silently clipping off-screen. */
+  /* Safety net only: with the 768px pass above the header fits on one row. */
   .header-container {
     flex-wrap: wrap;
     row-gap: 8px;
@@ -2984,10 +3006,6 @@ body {
   .header-right {
     flex-wrap: wrap;
     justify-content: flex-end;
-  }
-
-  .btn-nav-login span {
-    display: none;
   }
 
   .nav-tabs {

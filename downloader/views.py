@@ -4,15 +4,16 @@ import uuid
 import random
 import threading
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from django.shortcuts import render, get_object_or_404, redirect
-from django.http import JsonResponse, FileResponse, Http404, StreamingHttpResponse
+from django.http import JsonResponse, FileResponse, Http404, StreamingHttpResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
 from django.utils import timezone
+from django.core.cache import cache
 from django.core.mail import send_mail, EmailMultiAlternatives
 from django.contrib.admin.views.decorators import staff_member_required
 from django.core.exceptions import ValidationError
@@ -164,12 +165,16 @@ def verify_google_access_token(access_token, client_id=None):
 
 def get_client_ip(request):
     """Extract real client IP address from HTTP request."""
-    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-    if x_forwarded_for:
-        ip = x_forwarded_for.split(',')[0].strip()
-    else:
-        ip = request.META.get('REMOTE_ADDR', '')
-    return ip
+    # PythonAnywhere's front proxy overwrites X-Real-IP. Otherwise use the LAST
+    # X-Forwarded-For hop (appended by our own proxy); the first one is client-controlled.
+    real_ip = request.META.get('HTTP_X_REAL_IP', '').strip()
+    if real_ip:
+        return real_ip
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    hops = [h.strip() for h in x_forwarded_for.split(',') if h.strip()]
+    if hops:
+        return hops[-1]
+    return request.META.get('REMOTE_ADDR', '')
 
 
 GUEST_ID_RE = re.compile(r'^[A-Za-z0-9_\-]{6,100}$')
@@ -273,15 +278,25 @@ def get_daily_search_status(request):
     }
 
 
+def robots_txt_view(request):
+    lines = [
+        'User-agent: *',
+        'Disallow: /admin/',
+        'Disallow: /admin-dashboard/',
+        'Disallow: /api/',
+        'Disallow: /download/',
+        'Allow: /',
+    ]
+    return HttpResponse('\n'.join(lines) + '\n', content_type='text/plain')
+
+
 def index_view(request):
     """Render main application single-page dashboard."""
-    current_year = datetime.now().year - 2006
     recent_downloads = records_for(request)[:10]
     status_info = get_daily_search_status(request)
 
     context = {
         'recent_downloads': recent_downloads,
-        'current_year': current_year,
         'google_client_id': getattr(settings, 'GOOGLE_CLIENT_ID', ''),
         'quota_info': status_info,
     }
@@ -794,6 +809,30 @@ def signup_view(request):
     })
 
 
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 15 * 60
+
+
+def _login_failure_keys(request, login_id):
+    return [
+        f"login_fail_ip:{get_client_ip(request) or 'unknown'}",
+        f"login_fail_id:{login_id.lower()}",
+    ]
+
+
+def _login_locked(keys):
+    return any(cache.get(k, 0) >= LOGIN_MAX_FAILURES for k in keys)
+
+
+def _record_login_failure(keys):
+    for k in keys:
+        if not cache.add(k, 1, LOGIN_LOCKOUT_SECONDS):
+            try:
+                cache.incr(k)
+            except ValueError:
+                cache.set(k, 1, LOGIN_LOCKOUT_SECONDS)
+
+
 @api_view(['POST'])
 def api_auth_login(request):
     """Authenticate standard username/email and password."""
@@ -802,6 +841,13 @@ def api_auth_login(request):
 
     if not login_id or not password:
         return Response({'error': 'Foydalanuvchi nomi/email va parol kiritilishi shart.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    failure_keys = _login_failure_keys(request, login_id)
+    if _login_locked(failure_keys):
+        return Response(
+            {'error': "Juda ko'p muvaffaqiyatsiz urinish. 15 daqiqadan so'ng qayta urinib ko'ring."},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
     username_to_auth = login_id
     if '@' in login_id:
@@ -812,11 +858,15 @@ def api_auth_login(request):
     user = authenticate(request, username=username_to_auth, password=password)
 
     if user is None:
+        _record_login_failure(failure_keys)
         return Response({'error': 'Foydalanuvchi nomi, email yoki parol noto\'g\'ri.'}, status=status.HTTP_400_BAD_REQUEST)
 
     if not user.is_active:
         return Response({'error': 'Ushbu hisob faolsizlantirilgan.'}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Only clear the per-account counter: clearing the IP one would let an attacker
+    # reset their budget by logging into an account of their own.
+    cache.delete(failure_keys[1])
     login(request, user)
     profile, _ = UserProfile.objects.get_or_create(user=user)
     apply_admin_email_rule(user, profile)
