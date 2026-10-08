@@ -117,7 +117,7 @@
         <div class="form-group">
           <div class="form-label-row">
             <label for="loginPassword" class="form-label">Parol</label>
-            <a href="#" class="form-forgot-link" onclick="alert('Parolni tiklash havolasi emailingizga yuboriladi.'); return false;">Parolni unutdingizmi?</a>
+            <a href="#" class="form-forgot-link" onclick="showForgotPasswordForm(); return false;">Parolni unutdingizmi?</a>
           </div>
           <div class="input-icon-wrapper">
             <svg class="input-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -342,10 +342,40 @@
         </div>
       </form>
 
+      <!-- FORGOT PASSWORD FORM -->
+      <form id="formForgotPassword" class="auth-form hidden-form" onsubmit="handleForgotPasswordSubmit(event)">
+        <div style="text-align: center; margin-bottom: 8px;">
+          <h2 style="color: #fff; font-size: 1.35rem; font-weight: 700; margin-bottom: 6px;">Parolni tiklash</h2>
+          <p style="color: #94a3b8; font-size: 0.9rem;">Hisobingiz emailini kiriting, unga yangi parol o'rnatish havolasini yuboramiz.</p>
+        </div>
+
+        <div class="form-group">
+          <label for="forgotEmail" class="form-label">Email Manzili</label>
+          <div class="input-icon-wrapper">
+            <svg class="input-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+              <polyline points="22,6 12,13 2,6"></polyline>
+            </svg>
+            <input type="email" id="forgotEmail" class="form-input" placeholder="ali@example.com" required autocomplete="email">
+          </div>
+        </div>
+
+        <button type="submit" id="btnForgotSubmit" class="btn-auth-primary">
+          <span class="btn-text">Havola yuborish</span>
+          <div class="btn-spinner" style="display: none;"></div>
+        </button>
+
+        <div style="text-align: center; margin-top: 14px;">
+          <a href="#" onclick="switchAuthTab('login'); return false;" style="color: #94a3b8; font-size: 0.88rem; text-decoration: none; padding: 6px;">
+            ← Kirish sahifasiga qaytish
+          </a>
+        </div>
+      </form>
+
     </div>
   </main>
 
-  <script src="{% static 'downloader/js/main.js' %}?v=5.8"></script>
+  <script src="{% static 'downloader/js/main.js' %}?v=6.1"></script>
 
 </body>
 </html>

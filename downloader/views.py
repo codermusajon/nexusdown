@@ -12,7 +12,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
+from django.urls import reverse
 from django.utils import timezone
+from django.utils.encoding import force_bytes, force_str
+from django.utils.html import escape
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.core.cache import cache
 from django.core.mail import send_mail, EmailMultiAlternatives
 from django.contrib.admin.views.decorators import staff_member_required
@@ -285,6 +290,7 @@ def robots_txt_view(request):
         'Disallow: /admin-dashboard/',
         'Disallow: /api/',
         'Disallow: /download/',
+        'Disallow: /reset/',
         'Allow: /',
     ]
     return HttpResponse('\n'.join(lines) + '\n', content_type='text/plain')
@@ -892,6 +898,130 @@ def api_auth_login(request):
         }
     })
 
+
+
+RESET_REQUESTS_PER_IP_HOUR = 5
+RESET_REQUESTS_PER_EMAIL_HOUR = 3
+RESET_GENERIC_MESSAGE = (
+    "Agar bu email ro'yxatdan o'tgan bo'lsa, parolni tiklash havolasi yuborildi. "
+    "Pochtangizni (va Spam papkasini) tekshiring."
+)
+
+
+def _hit_rate_limit(key, limit, window_seconds):
+    """Count one hit for key; True once the window's limit is exceeded."""
+    if cache.add(key, 1, window_seconds):
+        return False
+    try:
+        return cache.incr(key) > limit
+    except ValueError:
+        cache.set(key, 1, window_seconds)
+        return False
+
+
+def _send_password_reset_email(user, reset_url):
+    name = escape(user.get_full_name() or user.username)
+    subject = "NexusDown - Parolni tiklash"
+    text_content = (
+        f"Salom {user.get_full_name() or user.username}!\n\n"
+        f"Parolingizni tiklash uchun quyidagi havolani oching (1 soat amal qiladi):\n{reset_url}\n\n"
+        f"Agar siz parolni tiklashni so'ramagan bo'lsangiz, ushbu xabarga e'tibor bermang - parolingiz o'zgarmaydi."
+    )
+    html_content = f"""
+    <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #0b0f19; color: #f1f5f9; padding: 32px 20px; max-width: 480px; margin: 0 auto; border-radius: 16px; border: 1px solid #1e293b;">
+        <div style="text-align: center; margin-bottom: 24px;">
+            <h1 style="-webkit-text-fill-color: #00f2fe; color: #00f2fe; font-size: 26px; font-weight: 800; margin: 0;">NexusDown</h1>
+            <p style="color: #94a3b8; font-size: 13px; margin: 4px 0 0 0;">Parolni tiklash</p>
+        </div>
+        <p style="font-size: 15px; color: #e2e8f0; margin-bottom: 12px;">Salom <strong>{name}</strong>,</p>
+        <p style="font-size: 14px; color: #94a3b8; line-height: 1.5; margin-bottom: 20px;">
+            Hisobingiz uchun parolni tiklash so'raldi. Yangi parol o'rnatish uchun tugmani bosing:
+        </p>
+        <div style="text-align: center; margin: 24px 0;">
+            <a href="{escape(reset_url)}" style="display: inline-block; background: linear-gradient(135deg, #6366f1, #a855f7); color: #ffffff; font-size: 16px; font-weight: 700; padding: 14px 28px; border-radius: 12px; text-decoration: none;">Yangi parol o'rnatish</a>
+        </div>
+        <p style="font-size: 13px; color: #fbbf24; text-align: center; margin-bottom: 24px;">
+            ⏳ Havola <strong>1 soat</strong> davomida va faqat bir marta amal qiladi.
+        </p>
+        <hr style="border: none; border-top: 1px solid #1e293b; margin: 20px 0;">
+        <p style="font-size: 11px; color: #64748b; text-align: center; margin: 0;">
+            Agar siz parolni tiklashni so'ramagan bo'lsangiz, ushbu xabarni e'tiborsiz qoldiring - parolingiz o'zgarmaydi.
+        </p>
+    </div>
+    """
+    try:
+        msg = EmailMultiAlternatives(subject, text_content, settings.DEFAULT_FROM_EMAIL, [user.email])
+        msg.attach_alternative(html_content, "text/html")
+        msg.send(fail_silently=False)
+    except Exception as e:
+        print(f"❌ [Password Reset Email Error]: {e}")
+
+
+@api_view(['POST'])
+def api_auth_password_reset_request(request):
+    """Email a one-time password reset link. Response never reveals whether the email exists."""
+    email = request.data.get('email', '').strip().lower()
+    if '@' not in email or len(email) > 254:
+        return Response({'error': 'Yaroqli email manzilini kiriting.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    ip_limited = _hit_rate_limit(f"pwreset_ip:{get_client_ip(request) or 'unknown'}", RESET_REQUESTS_PER_IP_HOUR, 3600)
+    email_limited = _hit_rate_limit(f"pwreset_email:{email}", RESET_REQUESTS_PER_EMAIL_HOUR, 3600)
+    if ip_limited or email_limited:
+        return Response(
+            {'error': "Juda ko'p so'rov yuborildi. Bir soatdan so'ng qayta urinib ko'ring."},
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
+    user = User.objects.filter(email__iexact=email, is_active=True).first()
+    if user:
+        path = reverse('downloader:password_reset_confirm', args=[
+            urlsafe_base64_encode(force_bytes(user.pk)),
+            default_token_generator.make_token(user),
+        ])
+        reset_url = f"{settings.SITE_URL}{path}" if settings.SITE_URL else request.build_absolute_uri(path)
+        threading.Thread(target=_send_password_reset_email, args=(user, reset_url), daemon=True).start()
+
+    return Response({'status': 'success', 'message': RESET_GENERIC_MESSAGE})
+
+
+def _user_from_reset_link(uidb64, token):
+    try:
+        user = User.objects.get(pk=force_str(urlsafe_base64_decode(uidb64)), is_active=True)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        return None
+    return user if default_token_generator.check_token(user, token) else None
+
+
+def password_reset_confirm_view(request, uidb64, token):
+    """Page where the user picks a new password from the emailed link."""
+    return render(request, 'downloader/password_reset_confirm.html', {
+        'link_valid': _user_from_reset_link(uidb64, token) is not None,
+        'uidb64': uidb64,
+        'token': token,
+    })
+
+
+@api_view(['POST'])
+def api_auth_password_reset_confirm(request):
+    """Set a new password using the uid/token from the reset link (token is single-use)."""
+    uidb64 = request.data.get('uid', '')
+    token = request.data.get('token', '')
+    password = request.data.get('password', '').strip()
+
+    user = _user_from_reset_link(uidb64, token)
+    if user is None:
+        return Response(
+            {'error': "Havola yaroqsiz yoki muddati o'tgan. Yangi havola so'rang."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(password) < 6:
+        return Response({'error': "Parol kamida 6 belgidan iborat bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.set_password(password)
+    user.save(update_fields=['password'])
+    cache.delete(f"login_fail_id:{user.username.lower()}")
+    cache.delete(f"login_fail_id:{user.email.lower()}")
+    return Response({'status': 'success', 'message': "Parol yangilandi. Endi yangi parol bilan kiring."})
 
 
 @api_view(['POST'])

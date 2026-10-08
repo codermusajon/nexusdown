@@ -1,9 +1,10 @@
+import re
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
-from django.test import RequestFactory, SimpleTestCase, TestCase
+from django.test import RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework import status
@@ -1007,6 +1008,85 @@ class LoginLockoutTests(TestCase):
         self.client.logout()
         self.assertEqual(self._login('wrong', ip='10.0.4.2').status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(self._login('correct-pass', ip='10.0.4.3').status_code, status.HTTP_200_OK)
+
+
+class _InlineThread:
+    def __init__(self, target, args=(), kwargs=None, daemon=None):
+        self.target, self.args, self.kwargs = target, args, kwargs or {}
+
+    def start(self):
+        self.target(*self.args, **self.kwargs)
+
+
+@patch('downloader.views.threading.Thread', _InlineThread)
+class PasswordResetTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(username='forgetful', email='forgetful@example.com', password='old-pass-1')
+        self.request_url = reverse('downloader:api_auth_password_reset_request')
+        self.confirm_url = reverse('downloader:api_auth_password_reset_confirm')
+
+    def tearDown(self):
+        cache.clear()
+
+    def _reset_link_parts(self):
+        from django.core import mail
+        self.assertEqual(len(mail.outbox), 1)
+        match = re.search(r'/reset/([^/\s]+)/([^/\s]+)/', mail.outbox[0].body)
+        self.assertIsNotNone(match)
+        return match.group(0), match.group(1), match.group(2)
+
+    def test_full_reset_flow_and_token_is_single_use(self):
+        res = self.client.post(self.request_url, {'email': 'Forgetful@Example.com'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        path, uid, token = self._reset_link_parts()
+
+        page = self.client.get(path)
+        self.assertContains(page, 'id="formResetConfirm"')
+
+        res = self.client.post(self.confirm_url, {'uid': uid, 'token': token, 'password': 'new-pass-2'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password('new-pass-2'))
+
+        reuse = self.client.post(self.confirm_url, {'uid': uid, 'token': token, 'password': 'evil-pass-3'})
+        self.assertEqual(reuse.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertNotContains(self.client.get(path), 'id="formResetConfirm"')
+
+    def test_unknown_email_gets_same_response_and_no_mail(self):
+        from django.core import mail
+        known = self.client.post(self.request_url, {'email': 'forgetful@example.com'}).json()
+        mail.outbox.clear()
+        unknown = self.client.post(self.request_url, {'email': 'nobody@example.com'}).json()
+        self.assertEqual(known, unknown)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_requests_are_rate_limited_per_email(self):
+        for i in range(downloader_views.RESET_REQUESTS_PER_EMAIL_HOUR):
+            self.client.post(self.request_url, {'email': 'forgetful@example.com'}, REMOTE_ADDR=f'10.9.0.{i}')
+        res = self.client.post(self.request_url, {'email': 'forgetful@example.com'}, REMOTE_ADDR='10.9.1.1')
+        self.assertEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+    def test_short_password_rejected_and_token_still_usable(self):
+        self.client.post(self.request_url, {'email': 'forgetful@example.com'})
+        _, uid, token = self._reset_link_parts()
+        res = self.client.post(self.confirm_url, {'uid': uid, 'token': token, 'password': '123'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        res = self.client.post(self.confirm_url, {'uid': uid, 'token': token, 'password': 'long-enough'})
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_garbage_link_is_rejected(self):
+        page = self.client.get(reverse('downloader:password_reset_confirm', args=['zzz', 'bad-token']))
+        self.assertEqual(page.status_code, 200)
+        self.assertContains(page, 'Havola yaroqsiz')
+        res = self.client.post(self.confirm_url, {'uid': 'zzz', 'token': 'bad', 'password': 'whatever1'})
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    @override_settings(SITE_URL='https://site.example')
+    def test_link_uses_site_url_not_request_host(self):
+        from django.core import mail
+        self.client.post(self.request_url, {'email': 'forgetful@example.com'})
+        self.assertIn('https://site.example/reset/', mail.outbox[0].body)
 
 
 class SeoAndMarkupTests(TestCase):

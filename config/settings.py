@@ -4,6 +4,7 @@ Django settings for config project.
 
 from pathlib import Path
 import os
+import sys
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -189,6 +190,11 @@ EMAIL_PORT = int(os.environ.get('EMAIL_PORT', 587))
 EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True') == 'True'
 DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', f"NexusDown <{EMAIL_HOST_USER}>" if EMAIL_HOST_USER else 'NexusDown <noreply@nexusdown.com>')
 
+# Public origin for links in emails (e.g. https://ismoiljon.pythonanywhere.com). When unset,
+# the request host is used, which is only safe while ALLOWED_HOSTS has no '*'.
+SITE_URL = os.environ.get('SITE_URL', '').rstrip('/')
+PASSWORD_RESET_TIMEOUT = 60 * 60
+
 # Security and Cookie Settings
 SESSION_COOKIE_HTTPONLY = True
 # Secure cookies default to on outside DEBUG; SECURE_COOKIES=false overrides for plain-HTTP staging.
@@ -203,7 +209,8 @@ X_FRAME_OPTIONS = 'DENY'
 if not DEBUG:
     # Behind a TLS-terminating proxy (Heroku/Railway/nginx) so Django knows the request was HTTPS.
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', True)
+    # The test client speaks plain HTTP, so redirecting would turn every view test into a 301.
+    SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', True) and 'test' not in sys.argv[1:2]
     SECURE_HSTS_SECONDS = int(os.environ.get('SECURE_HSTS_SECONDS', 60 * 60 * 24 * 30))
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = False

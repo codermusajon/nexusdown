@@ -1316,6 +1316,7 @@ function switchAuthTab(tabName) {
   if (authAlert) authAlert.style.display = 'none';
   if (authTabsGroup) authTabsGroup.style.display = 'flex';
   if (formVerify) formVerify.classList.add('hidden-form');
+  document.getElementById('formForgotPassword')?.classList.add('hidden-form');
 
   if (tabName === 'login') {
     if (tabLogin) tabLogin.classList.add('active');
@@ -1514,6 +1515,88 @@ async function handleLoginSubmit(e) {
     }
   } catch (err) {
     setAuthButtonState('btnLoginSubmit', false, 'Kirish');
+    displayAuthAlert('Server bilan bog\'lanishda xatolik yuz berdi.');
+  }
+}
+
+function showForgotPasswordForm() {
+  const authAlert = document.getElementById('authAlert');
+  if (authAlert) authAlert.style.display = 'none';
+  const authTabsGroup = document.getElementById('authTabsGroup');
+  if (authTabsGroup) authTabsGroup.style.display = 'none';
+  ['formLogin', 'formRegister', 'formVerifyCode'].forEach(id => document.getElementById(id)?.classList.add('hidden-form'));
+  document.getElementById('formForgotPassword')?.classList.remove('hidden-form');
+
+  const forgotEmail = document.getElementById('forgotEmail');
+  const loginId = document.getElementById('loginId')?.value.trim() || '';
+  if (forgotEmail && loginId.includes('@')) forgotEmail.value = loginId;
+  setTimeout(() => forgotEmail?.focus(), 100);
+}
+
+async function postAuthJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCsrfToken() },
+    body: JSON.stringify(body)
+  });
+  return { res, data: await res.json() };
+}
+
+async function handleForgotPasswordSubmit(e) {
+  e.preventDefault();
+  const email = document.getElementById('forgotEmail')?.value.trim().toLowerCase();
+  if (!email) {
+    displayAuthAlert('Email manzilini kiriting.');
+    return;
+  }
+
+  setAuthButtonState('btnForgotSubmit', true, 'Havola yuborish');
+  try {
+    const { res, data } = await postAuthJson('/api/auth/password-reset/', { email });
+    setAuthButtonState('btnForgotSubmit', false, 'Havola yuborish');
+    if (res.ok && data.status === 'success') {
+      displayAuthAlert(data.message, 'success');
+    } else {
+      displayAuthAlert(data.error || 'Havolani yuborishda xatolik yuz berdi.');
+    }
+  } catch (err) {
+    setAuthButtonState('btnForgotSubmit', false, 'Havola yuborish');
+    displayAuthAlert('Server bilan bog\'lanishda xatolik yuz berdi.');
+  }
+}
+
+async function handleResetConfirmSubmit(e) {
+  e.preventDefault();
+  const form = e.target;
+  const password = document.getElementById('resetPassword')?.value.trim();
+  const confirmPassword = document.getElementById('resetPasswordConfirm')?.value.trim();
+
+  if (!password || password.length < 6) {
+    displayAuthAlert('Parol kamida 6 belgidan iborat bo\'lishi kerak.');
+    return;
+  }
+  if (password !== confirmPassword) {
+    displayAuthAlert('Parollar mos kelmadi. Iltimos tekshiring.');
+    return;
+  }
+
+  setAuthButtonState('btnResetSubmit', true, 'Parolni saqlash');
+  try {
+    const { res, data } = await postAuthJson('/api/auth/password-reset/confirm/', {
+      uid: form.dataset.uid,
+      token: form.dataset.token,
+      password
+    });
+    if (res.ok && data.status === 'success') {
+      displayAuthAlert(data.message, 'success');
+      form.querySelectorAll('input, button').forEach(el => { el.disabled = true; });
+      setTimeout(() => { window.location.href = '/login/'; }, 1500);
+    } else {
+      setAuthButtonState('btnResetSubmit', false, 'Parolni saqlash');
+      displayAuthAlert(data.error || 'Parolni yangilashda xatolik yuz berdi.');
+    }
+  } catch (err) {
+    setAuthButtonState('btnResetSubmit', false, 'Parolni saqlash');
     displayAuthAlert('Server bilan bog\'lanishda xatolik yuz berdi.');
   }
 }
