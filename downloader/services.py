@@ -537,7 +537,7 @@ class YtDlpService:
                         }
                     return {
                         'status': 'error',
-                        'error': 'Media extraction failed or no playable media found for this link.'
+                        'error': 'Bu havola uchun media topilmadi yoki uni o\'qib bo\'lmadi. Havolani tekshirib, qayta urinib ko\'ring.'
                     }
 
                 video_formats_local.sort(key=lambda x: x.get('height', 0), reverse=True)
@@ -759,6 +759,25 @@ class YtDlpService:
         if h > 0:
             return f"{h:02d}:{m:02d}:{s:02d}"
         return f"{m:02d}:{s:02d}"
+
+
+def cleanup_old_downloads(directory, max_age_seconds):
+    """Delete regular files in `directory` not modified for `max_age_seconds`; returns how many."""
+    import time
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.is_file(follow_symlinks=False) and entry.stat().st_mtime < cutoff:
+                os.remove(entry.path)
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 class FileDownloadService:

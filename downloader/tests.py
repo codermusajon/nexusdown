@@ -1102,3 +1102,51 @@ class SeoAndMarkupTests(TestCase):
         self.assertNotContains(response, 'user-scalable=no')
         self.assertContains(response, '<meta name="description"')
         self.assertContains(response, 'property="og:image"')
+
+
+class DownloadThrottleAndCleanupTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    @override_settings(DOWNLOADS_PER_HOUR_GUEST=2)
+    def test_guest_download_endpoint_is_rate_limited(self):
+        url = reverse('downloader:api_download_media_stream')
+        params = {'original_url': 'https://www.youtube.com/watch?v=abc', 'format_id': 'premium_required'}
+        self.assertEqual(self.client.get(url, params).status_code, 403)
+        self.assertEqual(self.client.get(url, params).status_code, 403)
+        self.assertEqual(self.client.get(url, params).status_code, 429)
+
+    @override_settings(DOWNLOADS_PER_HOUR_GUEST=1, DOWNLOADS_PER_HOUR_USER=5)
+    def test_logged_in_users_get_their_own_higher_bucket(self):
+        url = reverse('downloader:api_download_media_stream')
+        params = {'original_url': 'https://www.youtube.com/watch?v=abc', 'format_id': 'premium_required'}
+        self.client.get(url, params)
+        self.assertEqual(self.client.get(url, params).status_code, 429)
+        user = User.objects.create_user(username='dl', password='Pw12345!x')
+        self.client.force_login(user)
+        self.assertEqual(self.client.get(url, params).status_code, 403)
+
+    @override_settings(CONVERSIONS_PER_HOUR_GUEST=1)
+    def test_convert_endpoint_is_rate_limited(self):
+        url = reverse('downloader:api_convert_images')
+        self.assertEqual(self.client.post(url, {'target_format': 'pdf'}).status_code, 400)
+        self.assertEqual(self.client.post(url, {'target_format': 'pdf'}).status_code, 429)
+
+    def test_convert_rejects_non_numeric_options(self):
+        response = self.client.post(reverse('downloader:api_convert_images'), {'margin': 'abc'})
+        self.assertEqual(response.status_code, 400)
+
+    def test_cleanup_removes_only_stale_files(self):
+        from .services import cleanup_old_downloads
+        with tempfile.TemporaryDirectory() as tmp:
+            old, fresh = os.path.join(tmp, 'old.mp4'), os.path.join(tmp, 'fresh.mp4')
+            for p in (old, fresh):
+                with open(p, 'wb') as f:
+                    f.write(b'x')
+            stale = os.path.getmtime(old) - 3 * 3600
+            os.utime(old, (stale, stale))
+            self.assertEqual(cleanup_old_downloads(tmp, 3600), 1)
+            self.assertFalse(os.path.exists(old))
+            self.assertTrue(os.path.exists(fresh))
+        self.assertEqual(cleanup_old_downloads('/nonexistent-dir-xyz', 3600), 0)

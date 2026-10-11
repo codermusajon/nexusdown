@@ -301,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resetInspectionState();
         showToast('Server bilan bog\'lanishda xatolik yuz berdi.', 'error');
       } finally {
-        setLoading(btnInspect, false, 'Chiqazish');
+        setLoading(btnInspect, false, 'Qidirish');
       }
     });
   }
@@ -1060,11 +1060,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // Utilities
   function setLoading(btn, isLoading, text) {
     if (isLoading) {
+      // Remember the idle markup (icon + label) so it can be restored exactly.
+      if (btn.dataset.idleHtml === undefined) btn.dataset.idleHtml = btn.innerHTML;
       btn.disabled = true;
       btn.innerHTML = `<div class="spinner"></div> ${text}`;
     } else {
       btn.disabled = false;
-      btn.innerHTML = text;
+      if (btn.dataset.idleHtml !== undefined) {
+        btn.innerHTML = btn.dataset.idleHtml;
+        delete btn.dataset.idleHtml;
+      } else {
+        btn.innerHTML = text;
+      }
     }
   }
 
@@ -1097,8 +1104,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const toast = document.createElement('div');
     toast.style.cssText = `
       position: fixed;
-      bottom: 24px;
-      right: 24px;
+      bottom: 16px;
+      right: 16px;
+      left: auto;
+      max-width: calc(100vw - 32px);
+      overflow-wrap: anywhere;
       background: ${type === 'error' ? 'rgba(244, 63, 94, 0.9)' : 'rgba(16, 185, 129, 0.9)'};
       color: #fff;
       padding: 12px 20px;
@@ -1108,6 +1118,7 @@ document.addEventListener('DOMContentLoaded', () => {
       z-index: 9999;
       animation: fadeIn 0.3s ease;
     `;
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
     toast.textContent = message;
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 4000);

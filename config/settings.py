@@ -164,6 +164,13 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Custom Downloader Settings
 DOWNLOADS_DIR = MEDIA_ROOT / 'downloads'
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+# Server-side copies in DOWNLOADS_DIR are deleted after this many hours (disk quota is small on shared hosts).
+DOWNLOAD_RETENTION_HOURS = float(os.environ.get('DOWNLOAD_RETENTION_HOURS', 24))
+# Per-hour caps on the unauthenticated-friendly download/convert endpoints (per IP for guests, per user otherwise).
+DOWNLOADS_PER_HOUR_GUEST = int(os.environ.get('DOWNLOADS_PER_HOUR_GUEST', 20))
+DOWNLOADS_PER_HOUR_USER = int(os.environ.get('DOWNLOADS_PER_HOUR_USER', 60))
+CONVERSIONS_PER_HOUR_GUEST = int(os.environ.get('CONVERSIONS_PER_HOUR_GUEST', 10))
+CONVERSIONS_PER_HOUR_USER = int(os.environ.get('CONVERSIONS_PER_HOUR_USER', 30))
 
 # Google Authentication Configuration
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')

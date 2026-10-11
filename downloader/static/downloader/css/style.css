@@ -3058,3 +3058,31 @@ body {
   }
 }
 
+/* Touch devices: give small controls a ~44px hit area without changing how they look on desktop. */
+@media (pointer: coarse) {
+  .btn-paste-input,
+  .btn-clear-act,
+  .btn-refresh-act,
+  .nav-tab-btn,
+  .admin-telegram-link,
+  .btn-back-home {
+    min-height: 44px;
+  }
+
+  .form-forgot-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+
+  .btn-toggle-password {
+    min-width: 44px;
+    min-height: 44px;
+    right: 2px;
+  }
+
+  .brand {
+    min-height: 44px;
+    align-items: center;
+  }
+}

@@ -37,7 +37,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerificationCode
-from .services import YtDlpService, FileDownloadService, ImageConverterService
+from .services import YtDlpService, FileDownloadService, ImageConverterService, cleanup_old_downloads
 
 
 import json
@@ -428,8 +428,27 @@ def download_file_view(request, record_id):
     raise Http404("Fayl topilmadi.")
 
 
+def _throttled(request, scope, guest_limit, user_limit):
+    """Count one hit for this requester (per IP for guests, per user otherwise); True once over the hourly cap."""
+    if _is_authenticated(request):
+        key, limit = f"{scope}_user:{request.user.id}", user_limit
+    else:
+        key, limit = f"{scope}_ip:{get_client_ip(request) or 'unknown'}", guest_limit
+    return _hit_rate_limit(key, limit, 3600)
+
+
+def _purge_stale_downloads():
+    """Drop old server-side copies, at most once every 10 minutes per process."""
+    if cache.add('downloads_cleanup_ran', 1, 600):
+        cleanup_old_downloads(settings.DOWNLOADS_DIR, settings.DOWNLOAD_RETENTION_HOURS * 3600)
+
+
 def api_download_media_stream(request):
     """Download or stream media file directly to user's browser, bypassing 403 blocks."""
+    if _throttled(request, 'dl', settings.DOWNLOADS_PER_HOUR_GUEST, settings.DOWNLOADS_PER_HOUR_USER):
+        return JsonResponse({'error': "Juda ko'p yuklash so'rovi yuborildi. Bir ozdan keyin qayta urinib ko'ring."}, status=429)
+    _purge_stale_downloads()
+
     url = request.GET.get('url')
     original_url = request.GET.get('original_url')
     format_id = request.GET.get('format_id')
@@ -529,12 +548,19 @@ import json
 @api_view(['POST'])
 def api_convert_images(request):
     """Convert uploaded image files to PDF or specific format with customization options."""
+    if _throttled(request, 'conv', settings.CONVERSIONS_PER_HOUR_GUEST, settings.CONVERSIONS_PER_HOUR_USER):
+        return Response({'error': "Juda ko'p so'rov yuborildi. Bir ozdan keyin qayta urinib ko'ring."}, status=status.HTTP_429_TOO_MANY_REQUESTS)
+    _purge_stale_downloads()
+
     files = request.FILES.getlist('images')
     target_format = request.POST.get('target_format', 'pdf').lower().strip()
     page_size = request.POST.get('page_size', 'a4').lower().strip()
     orientation = request.POST.get('orientation', 'auto').lower().strip()
-    margin_mm = float(request.POST.get('margin', 0) or 0)
-    quality = int(request.POST.get('quality', 90) or 90)
+    try:
+        margin_mm = float(request.POST.get('margin', 0) or 0)
+        quality = int(request.POST.get('quality', 90) or 90)
+    except ValueError:
+        return Response({'error': "Chekka yoki sifat qiymati noto'g'ri."}, status=status.HTTP_400_BAD_REQUEST)
     page_numbers = str(request.POST.get('page_numbers', 'false')).lower() in ['true', '1', 'yes']
     output_mode = request.POST.get('output_mode', 'single_pdf').lower().strip()
 
