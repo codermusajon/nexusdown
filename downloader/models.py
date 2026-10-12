@@ -47,6 +47,25 @@ class DailySearchTracker(models.Model):
         return f"{self.identifier} on {self.date}: {self.search_count} searches"
 
 
+class SiteSettings(models.Model):
+    """Single-row table of limits the admin can change without a deploy (always pk=1)."""
+    guest_daily_limit = models.PositiveIntegerField(default=2, help_text="Daily searches for visitors who are not logged in.")
+    free_daily_limit = models.PositiveIntegerField(default=10, help_text="Daily searches for logged-in free users.")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Site settings'
+        verbose_name_plural = 'Site settings'
+
+    @classmethod
+    def load(cls):
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+
+    def __str__(self):
+        return f"Limits: guests {self.guest_daily_limit}/day, free users {self.free_daily_limit}/day"
+
+
 class EmailVerificationCode(models.Model):
     email = models.EmailField(db_index=True)
     code = models.CharField(max_length=6)

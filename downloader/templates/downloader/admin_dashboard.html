@@ -160,6 +160,55 @@
       background: #ef4444;
       color: #fff;
     }
+
+    .limits-form {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 20px;
+      align-items: start;
+    }
+    .limits-field {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .limits-field .admin-search-input {
+      width: 100%;
+      font-size: 1rem;
+      min-height: 44px;
+    }
+    .limits-label {
+      color: #fff;
+      font-weight: 600;
+      font-size: 0.95rem;
+    }
+    .limits-hint {
+      color: #94a3b8;
+      font-size: 0.8rem;
+    }
+    .limits-actions {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .limits-actions .btn-act-premium {
+      min-height: 44px;
+      padding: 10px 22px;
+      font-size: 0.95rem;
+    }
+    .limits-status {
+      font-size: 0.9rem;
+      color: #94a3b8;
+    }
+    .limits-status.ok { color: #10b981; }
+    .limits-status.err { color: #ef4444; }
+
+    @media (max-width: 640px) {
+      .admin-tabs { flex-wrap: wrap; }
+      .admin-tab-btn { padding: 10px 14px; font-size: 0.9rem; }
+    }
   </style>
 </head>
 <body>
@@ -220,6 +269,7 @@
     <div class="admin-tabs">
       <button class="admin-tab-btn active" data-tab="tab-users">👥 Foydalanuvchilar Boshqaruvi</button>
       <button class="admin-tab-btn" data-tab="tab-history">📜 Barcha Yuklanmalar Tarixi</button>
+      <button class="admin-tab-btn" data-tab="tab-limits">⚙️ Limitlar</button>
     </div>
 
     <!-- TAB 1: Users Management -->
@@ -279,6 +329,33 @@
             </tbody>
           </table>
         </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: Daily search limits for free users -->
+    <div class="admin-pane" id="tab-limits" style="display: none;">
+      <div class="admin-table-card">
+        <div class="admin-table-header">
+          <h3 style="margin: 0; font-size: 1.2rem; color: #fff;">Bepul Foydalanuvchilar Limiti</h3>
+        </div>
+        <p style="color: #94a3b8; margin: 0 0 20px;">Kuniga nechta qidiruv qilish mumkinligini belgilang. Premium foydalanuvchilarga limit qo'llanmaydi. O'zgarish saqlangandan keyin darhol kuchga kiradi.</p>
+
+        <form id="limitsForm" class="limits-form" autocomplete="off">
+          <label class="limits-field" for="guestLimitInput">
+            <span class="limits-label">👤 Ro'yxatdan o'tmaganlar (mehmon)</span>
+            <input type="number" id="guestLimitInput" class="admin-search-input" min="0" max="1000" step="1" inputmode="numeric" required>
+            <span class="limits-hint">kuniga qidiruv, IP manzil bo'yicha hisoblanadi</span>
+          </label>
+          <label class="limits-field" for="freeLimitInput">
+            <span class="limits-label">🆓 Ro'yxatdan o'tgan bepul foydalanuvchilar</span>
+            <input type="number" id="freeLimitInput" class="admin-search-input" min="0" max="1000" step="1" inputmode="numeric" required>
+            <span class="limits-hint">kuniga qidiruv, har bir hisob uchun</span>
+          </label>
+          <div class="limits-actions">
+            <button type="submit" id="limitsSaveBtn" class="btn-act-premium">💾 Saqlash</button>
+            <span id="limitsStatus" class="limits-status" role="status" aria-live="polite"></span>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -427,8 +504,61 @@
 
       document.getElementById('historySearchInput').addEventListener('input', loadHistory);
 
+      // Daily search limits (guests / free users)
+      const limitsForm = document.getElementById('limitsForm');
+      const guestLimitInput = document.getElementById('guestLimitInput');
+      const freeLimitInput = document.getElementById('freeLimitInput');
+      const limitsStatus = document.getElementById('limitsStatus');
+      const limitsSaveBtn = document.getElementById('limitsSaveBtn');
+
+      function setLimitsStatus(text, kind) {
+        limitsStatus.textContent = text;
+        limitsStatus.className = 'limits-status' + (kind ? ' ' + kind : '');
+      }
+
+      async function loadLimits() {
+        try {
+          const res = await fetch('/api/admin/limits/');
+          const data = await res.json();
+          if (!res.ok) throw new Error(data.error || 'Xatolik');
+          guestLimitInput.value = data.guest_daily_limit;
+          freeLimitInput.value = data.free_daily_limit;
+        } catch (e) {
+          setLimitsStatus("Limitlarni yuklab bo'lmadi.", 'err');
+        }
+      }
+
+      limitsForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        limitsSaveBtn.disabled = true;
+        setLimitsStatus('Saqlanmoqda...', '');
+        try {
+          const res = await fetch('/api/admin/limits/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
+            body: JSON.stringify({
+              guest_daily_limit: guestLimitInput.value.trim(),
+              free_daily_limit: freeLimitInput.value.trim()
+            })
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            setLimitsStatus(data.error || 'Saqlab bo\'lmadi.', 'err');
+            return;
+          }
+          guestLimitInput.value = data.guest_daily_limit;
+          freeLimitInput.value = data.free_daily_limit;
+          setLimitsStatus('✓ Saqlandi', 'ok');
+        } catch (e) {
+          setLimitsStatus('Server xatosi.', 'err');
+        } finally {
+          limitsSaveBtn.disabled = false;
+        }
+      });
+
       loadUsers();
       loadHistory();
+      loadLimits();
     });
   </script>
 </body>

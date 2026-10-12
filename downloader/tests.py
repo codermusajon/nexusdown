@@ -1366,3 +1366,160 @@ class GoogleDriveSignedLinkTests(TestCase):
         payload = signing.loads(files[1]['download_url'].rsplit('/g/', 1)[1].strip('/'), salt=downloader_views.GDRIVE_LINK_SALT)
         self.assertEqual(payload['u'], f'https://docs.google.com/document/d/{self.FILE_ID}/export?format=docx')
         self.assertEqual(payload['n'], 'VAHOBOV ISMOIL.docx')
+
+
+class AdminSearchLimitTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        self.url = reverse('downloader:api_admin_limits')
+        self.admin = User.objects.create_superuser(username='boss2', email='boss2@test.com', password='AdminPassword123!')
+        self.free = User.objects.create_user(username='freebie', email='freebie@test.com', password='Pw12345!xyz')
+
+    def _post(self, payload):
+        return self.client.post(self.url, payload, content_type='application/json')
+
+    def test_defaults_are_two_and_ten(self):
+        self.client.force_login(self.admin)
+        data = self.client.get(self.url).json()
+        self.assertEqual((data['guest_daily_limit'], data['free_daily_limit']), (2, 10))
+
+    def test_only_staff_can_read_or_change_limits(self):
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.client.force_login(self.free)
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self._post({'free_daily_limit': 500}).status_code, 403)
+        from .models import SiteSettings
+        self.assertEqual(SiteSettings.load().free_daily_limit, 10)
+
+    def test_admin_can_change_limits_and_partial_updates_keep_the_other(self):
+        from .models import SiteSettings
+        self.client.force_login(self.admin)
+        response = self._post({'guest_daily_limit': '5', 'free_daily_limit': 25})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['free_daily_limit'], 25)
+        self._post({'free_daily_limit': 30})
+        site = SiteSettings.load()
+        self.assertEqual((site.guest_daily_limit, site.free_daily_limit), (5, 30))
+
+    def test_invalid_values_are_rejected(self):
+        from .models import SiteSettings
+        self.client.force_login(self.admin)
+        for bad in (-1, 1001, 'abc', '', 2.5, True, None, [3]):
+            self.assertEqual(self._post({'free_daily_limit': bad}).status_code, 400, msg=repr(bad))
+        self.assertEqual(self._post({}).status_code, 400)
+        self.assertEqual(SiteSettings.load().free_daily_limit, 10)
+
+    def test_new_limits_are_enforced_for_free_users_and_guests(self):
+        from .models import SiteSettings
+        site = SiteSettings.load()
+        site.free_daily_limit, site.guest_daily_limit = 3, 1
+        site.save()
+
+        self.client.force_login(self.free)
+        free_status = downloader_views.get_daily_search_status(self._request(self.free))
+        self.assertEqual((free_status['limit'], free_status['user_type']), (3, 'registered'))
+        self.client.logout()
+        guest_status = downloader_views.get_daily_search_status(self._request(None))
+        self.assertEqual((guest_status['limit'], guest_status['user_type']), (1, 'unregistered'))
+
+    def _request(self, user):
+        from django.contrib.auth.models import AnonymousUser
+        request = RequestFactory().get('/')
+        request.user = user or AnonymousUser()
+        return request
+
+    @patch('downloader.views.YtDlpService.inspect_url', return_value={'status': 'success', 'title': 't', 'video_formats': []})
+    def test_limit_message_and_modal_use_the_configured_numbers(self, _inspect):
+        from .models import SiteSettings
+        site = SiteSettings.load()
+        site.guest_daily_limit, site.free_daily_limit = 1, 7
+        site.save()
+
+        def search():
+            return self.client.post(reverse('downloader:api_inspect'), {'url': 'https://example.com/v.mp4'},
+                                    content_type='application/json')
+        self.assertEqual(search().status_code, 200)
+        blocked = search()
+        self.assertEqual(blocked.status_code, 403)
+        self.assertIn('faqat 1 marta', blocked.json()['error'])
+
+        page = self.client.get(reverse('downloader:index')).content.decode('utf-8')
+        self.assertIn('<strong>1 marta</strong>', page)
+        self.assertIn('kuniga 7 ta tekin qidiruv', page)
+
+    def test_zero_blocks_free_searches_but_premium_stays_unlimited(self):
+        from .models import SiteSettings, UserProfile
+        site = SiteSettings.load()
+        site.free_daily_limit = 0
+        site.save()
+        self.assertEqual(downloader_views.get_daily_search_status(self._request(self.free))['limit'], 0)
+        profile = UserProfile.objects.get(user=self.free)
+        profile.is_premium = True
+        profile.save()
+        self.assertIsNone(downloader_views.get_daily_search_status(self._request(self.free))['limit'])
+
+    def test_dashboard_page_has_the_limits_section(self):
+        self.client.force_login(self.admin)
+        page = self.client.get(reverse('downloader:admin_dashboard')).content.decode('utf-8')
+        self.assertIn('id="tab-limits"', page)
+        self.assertIn('/api/admin/limits/', page)
+
+
+class SharedLinkRedirectTests(TestCase):
+    FILE_ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz012345'
+    ORIGINAL = 'https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/edit?usp=sharing'
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def _token(self, original=ORIGINAL):
+        from django.core import signing
+        payload = {'u': f'https://docs.google.com/document/d/{self.FILE_ID}/export?format=pdf', 'n': 'Hisobot.pdf'}
+        if original is not None:
+            payload['o'] = original
+        return signing.dumps(payload, salt=downloader_views.GDRIVE_LINK_SALT, compress=True)
+
+    def _get(self, **headers):
+        return self.client.get(reverse('downloader:gdrive_download', args=[self._token()]), **headers)
+
+    def test_opened_from_outside_redirects_to_the_search_box_with_the_url(self):
+        from urllib.parse import parse_qs, urlparse
+        for site in ('none', 'cross-site'):
+            response = self._get(HTTP_SEC_FETCH_SITE=site)
+            self.assertEqual(response.status_code, 302, msg=site)
+            target = urlparse(response['Location'])
+            self.assertEqual(target.path, '/')
+            self.assertEqual(parse_qs(target.query)['url'], [self.ORIGINAL])
+
+    @patch('downloader.views.safe_stream_get')
+    def test_clicks_inside_the_site_still_download(self, mock_get):
+        mock_get.return_value = GoogleDriveSignedLinkTests._Upstream()
+        for site in ('same-origin', 'same-site'):
+            response = self._get(HTTP_SEC_FETCH_SITE=site)
+            self.assertEqual(response.status_code, 200, msg=site)
+            b''.join(response.streaming_content)
+
+    @patch('downloader.views.safe_stream_get')
+    def test_clients_without_the_header_are_not_broken(self, mock_get):
+        mock_get.return_value = GoogleDriveSignedLinkTests._Upstream()
+        self.assertEqual(self._get().status_code, 200)
+
+    def test_old_tokens_without_original_url_redirect_to_the_home_page(self):
+        token = self._token(original=None)
+        response = self.client.get(reverse('downloader:gdrive_download', args=[token]), HTTP_SEC_FETCH_SITE='none')
+        self.assertEqual((response.status_code, response['Location']), (302, '/'))
+
+    def test_tampered_link_is_still_rejected_before_any_redirect(self):
+        token = self._token()
+        response = self.client.get(
+            reverse('downloader:gdrive_download', args=[token[:-3] + ('AAA' if not token.endswith('AAA') else 'BBB')]),
+            HTTP_SEC_FETCH_SITE='none',
+        )
+        self.assertEqual(response.status_code, 410)
+
+    def test_index_page_loads_the_prefill_script(self):
+        page = self.client.get(reverse('downloader:index'), {'url': self.ORIGINAL}).content.decode('utf-8')
+        self.assertIn('main.js', page)
+        self.assertIn('id="mediaUrlInput"', page)

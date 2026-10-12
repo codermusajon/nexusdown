@@ -587,11 +587,11 @@
     <div class="popup-modal-card">
       <button class="popup-modal-close" onclick="closeModal('modalUnregisteredLimit')">✕</button>
       <div class="popup-modal-icon">🔒</div>
-      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi (2/2)</h2>
+      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi ({{ guest_limit }}/{{ guest_limit }})</h2>
       <p class="popup-modal-sub">
-        Ro'yxatdan o'tmagan foydalanuvchilar kuniga <strong>2 marta</strong> qidirishlari mumkin.
+        Ro'yxatdan o'tmagan foydalanuvchilar kuniga <strong>{{ guest_limit }} marta</strong> qidirishlari mumkin.
         <br><br>
-        Ro'yxatdan o'ting va <strong>kuniga 10 ta tekin qidiruv</strong> imkoniyatiga ega bo'ling!
+        Ro'yxatdan o'ting va <strong>kuniga {{ free_limit }} ta tekin qidiruv</strong> imkoniyatiga ega bo'ling!
       </p>
       <div class="popup-modal-actions">
         <a href="{% url 'downloader:signup' %}" class="btn-popup-primary">🚀 Ro'yxatdan o'tish</a>
@@ -605,9 +605,9 @@
     <div class="popup-modal-card">
       <button class="popup-modal-close" onclick="closeModal('modalRegisteredLimit')">✕</button>
       <div class="popup-modal-icon">👑</div>
-      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi (10/10)</h2>
+      <h2 class="popup-modal-title">Kunlik Qidiruv Cheklovi ({{ free_limit }}/{{ free_limit }})</h2>
       <p class="popup-modal-sub">
-        Ro'yxatdan o'tgan foydalanuvchilar uchun ajratilgan kunlik <strong>10 ta qidiruv</strong> tugadi.
+        Ro'yxatdan o'tgan foydalanuvchilar uchun ajratilgan kunlik <strong>{{ free_limit }} ta qidiruv</strong> tugadi.
         <br><br>
         <strong>Cheksiz qidiruvlar</strong> va <strong>4K/2K sifatda yuklab olish</strong> uchun Premium maqomiga o'ting!
       </p>
@@ -653,7 +653,7 @@
   </div>
 
   <!-- App Script -->
-  <script src="{% static 'downloader/js/main.js' %}?v=6.3"></script>
+  <script src="{% static 'downloader/js/main.js' %}?v=6.4"></script>
 
 </body>
 </html>

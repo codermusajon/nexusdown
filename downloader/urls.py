@@ -30,5 +30,6 @@ urlpatterns = [
     path('api/admin/users/', views.api_admin_users, name='api_admin_users'),
     path('api/admin/toggle-premium/', views.api_admin_toggle_premium, name='api_admin_toggle_premium'),
     path('api/admin/history/', views.api_admin_history, name='api_admin_history'),
+    path('api/admin/limits/', views.api_admin_limits, name='api_admin_limits'),
 ]
 

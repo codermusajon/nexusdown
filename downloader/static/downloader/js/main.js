@@ -237,6 +237,27 @@ document.addEventListener('DOMContentLoaded', () => {
   getOrCreateUserId();
   refreshHistory();
 
+  // Links like /?url=https://... (also where signed /g/ links bounce shared visitors) arrive
+  // with the address pre-filled; the visitor presses "Qidirish" themselves.
+  (function prefillFromQuery() {
+    if (!mediaUrlInput || !btnInspect) return;
+    let shared = '';
+    try {
+      shared = (new URLSearchParams(window.location.search).get('url') || '').trim();
+    } catch (e) {
+      return;
+    }
+    if (!/^https?:\/\//i.test(shared)) return;
+
+    mediaUrlInput.value = shared;
+    try {
+      window.history.replaceState(null, '', window.location.pathname);
+    } catch (e) { /* non-critical */ }
+    mediaUrlInput.scrollIntoView({ block: 'center' });
+    btnInspect.focus({ preventScroll: true });
+    showToast("Havola qo'yildi. «Qidirish» tugmasini bosing.", 'success');
+  })();
+
   // URL Inspector (Media / Video / Audio)
   if (mediaUrlInput && btnInspect) {
     mediaUrlInput.addEventListener('keydown', (e) => {

@@ -38,14 +38,14 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 
-from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerificationCode
+from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerificationCode, SiteSettings
 from .services import YtDlpService, FileDownloadService, ImageConverterService, GoogleDriveService, cleanup_old_downloads
 
 
 import json
 import ipaddress
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 from django.contrib.auth.hashers import make_password
 
 
@@ -251,21 +251,22 @@ def staff_required_api(view_func):
 def get_daily_search_status(request):
     """
     Check current daily search usage and user limit.
-    - Guest (unregistered): limit = 2
-    - Registered Free: limit = 10
+    - Guest (unregistered): limit = SiteSettings.guest_daily_limit (default 2)
+    - Registered Free: limit = SiteSettings.free_daily_limit (default 10)
     - Premium User: limit = None (unlimited)
     """
     today = timezone.now().date()
+    site = SiteSettings.load()
 
     if hasattr(request, 'user') and request.user and request.user.is_authenticated:
         profile, _ = UserProfile.objects.get_or_create(user=request.user)
         is_premium = profile.is_premium_active
-        limit = None if is_premium else 10
+        limit = None if is_premium else site.free_daily_limit
         user_type = 'premium' if is_premium else 'registered'
         identifier = f"user_{request.user.id}"
     else:
         is_premium = False
-        limit = 2
+        limit = site.guest_daily_limit
         user_type = 'unregistered'
         # Key anonymous quota on IP, not on the client-chosen guest id, otherwise the
         # daily limit is bypassed by simply generating a new id per request.
@@ -307,6 +308,8 @@ def index_view(request):
         'recent_downloads': recent_downloads,
         'google_client_id': getattr(settings, 'GOOGLE_CLIENT_ID', ''),
         'quota_info': status_info,
+        'guest_limit': SiteSettings.load().guest_daily_limit,
+        'free_limit': SiteSettings.load().free_daily_limit,
     }
     return render(request, 'downloader/index.html', context)
 
@@ -329,14 +332,14 @@ def api_inspect(request):
         if status_info['user_type'] == 'unregistered':
             return Response({
                 'error_code': 'UNREGISTERED_LIMIT_REACHED',
-                'error': 'Ro\'yxatdan o\'tmagan foydalanuvchilar kuniga faqat 2 marta qidirishlari mumkin. Davom etish uchun ro\'yxatdan o\'ting!',
+                'error': f'Ro\'yxatdan o\'tmagan foydalanuvchilar kuniga faqat {limit} marta qidirishlari mumkin. Davom etish uchun ro\'yxatdan o\'ting!',
                 'searches_today': searches_today,
                 'max_searches': limit,
             }, status=status.HTTP_403_FORBIDDEN)
         else:
             return Response({
                 'error_code': 'REGISTERED_LIMIT_REACHED',
-                'error': 'Ro\'yxatdan o\'tgan foydalanuvchilar kuniga 10 marta qidirishlari mumkin. Cheksiz qidiruvlar uchun Premium maqomiga o\'ting!',
+                'error': f'Ro\'yxatdan o\'tgan foydalanuvchilar kuniga {limit} marta qidirishlari mumkin. Cheksiz qidiruvlar uchun Premium maqomiga o\'ting!',
                 'searches_today': searches_today,
                 'max_searches': limit,
                 'telegram_info': '@coder_ismoil'
@@ -350,7 +353,7 @@ def api_inspect(request):
 
     # Google Drive/Docs files are handed out as our own signed links instead of raw Google URLs.
     for f in result.get('files') or []:
-        f['download_url'] = make_gdrive_link(request, f['download_url'], f.get('filename') or 'nexusdown_file')
+        f['download_url'] = make_gdrive_link(request, f['download_url'], f.get('filename') or 'nexusdown_file', url)
 
     # Increment search count upon successful inspect
     tracker = status_info['tracker']
@@ -453,9 +456,13 @@ GDRIVE_LINK_SALT = 'nexusdown.gdrive-link'
 GDRIVE_ALLOWED_HOSTS = ('docs.google.com', 'drive.usercontent.google.com', 'drive.google.com')
 
 
-def make_gdrive_link(request, google_url, filename):
-    """Our own expiring, signed URL for a Google file, so the link lives on this site's domain."""
-    token = signing.dumps({'u': google_url, 'n': filename}, salt=GDRIVE_LINK_SALT, compress=True)
+def make_gdrive_link(request, google_url, filename, original_url=''):
+    """Our own expiring, signed URL for a Google file, so the link lives on this site's domain.
+
+    `original_url` is the link the visitor searched for; opening the signed link from outside
+    the site sends them back to the search box with that URL pre-filled.
+    """
+    token = signing.dumps({'u': google_url, 'n': filename, 'o': original_url}, salt=GDRIVE_LINK_SALT, compress=True)
     return request.build_absolute_uri(reverse('downloader:gdrive_download', args=[token]))
 
 
@@ -466,6 +473,18 @@ def gdrive_download_view(request, token):
         google_url, filename = payload['u'], payload['n']
     except (signing.BadSignature, KeyError, TypeError):
         return HttpResponse("Havola yaroqsiz yoki muddati tugagan. Saytda qayta qidiring.", status=410, content_type='text/plain; charset=utf-8')
+
+    # Opened from outside the site (pasted into the address bar, shared in a chat, another website):
+    # send the visitor to the search box with the URL pre-filled instead of handing out the file.
+    # Browsers label such navigations via Sec-Fetch-Site; clicks inside NexusDown are same-origin,
+    # and clients that send no header (old browsers, curl) are served as before.
+    fetch_site = request.headers.get('Sec-Fetch-Site')
+    if fetch_site and fetch_site not in ('same-origin', 'same-site'):
+        original = payload.get('o') or ''
+        target = reverse('downloader:index')
+        if original:
+            target += '?' + urlencode({'url': original})
+        return redirect(target)
 
     # The signature already proves we issued this URL; the host check is defence in depth.
     if (urlparse(google_url).hostname or '').lower() not in GDRIVE_ALLOWED_HOSTS:
@@ -1411,6 +1430,43 @@ def api_admin_toggle_premium(request):
         'is_premium': profile.is_premium_active,
         'premium_expires_at': timezone.localtime(profile.premium_expires_at).strftime('%Y-%m-%d %H:%M') if profile.premium_expires_at else None
     })
+
+
+def _limits_payload(site):
+    return {'guest_daily_limit': site.guest_daily_limit, 'free_daily_limit': site.free_daily_limit}
+
+
+def _parse_limit(value):
+    """Whole number between 0 and 1000 (bool is an int subclass, so reject it explicitly)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if isinstance(value, int) and 0 <= value <= 1000:
+        return value
+    return None
+
+
+@api_view(['GET', 'POST'])
+@staff_required_api
+def api_admin_limits(request):
+    """Read or change the daily search limits for guests and free users."""
+    site = SiteSettings.load()
+    if request.method == 'POST':
+        updates = {}
+        for field in ('guest_daily_limit', 'free_daily_limit'):
+            if field in request.data:
+                parsed = _parse_limit(request.data.get(field))
+                if parsed is None:
+                    return Response({'error': "Limit 0 dan 1000 gacha butun son bo'lishi kerak."}, status=status.HTTP_400_BAD_REQUEST)
+                updates[field] = parsed
+        if not updates:
+            return Response({'error': "O'zgartirish uchun qiymat yuborilmadi."}, status=status.HTTP_400_BAD_REQUEST)
+        for field, value in updates.items():
+            setattr(site, field, value)
+        site.save()
+        return Response({'status': 'success', 'message': 'Limitlar saqlandi.', **_limits_payload(site)})
+    return Response({'status': 'success', **_limits_payload(site)})
 
 
 @api_view(['GET'])

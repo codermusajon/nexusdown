@@ -1,5 +1,10 @@
 from django.contrib import admin
-from .models import UserProfile, DailySearchTracker, EmailVerificationCode, DownloadRecord
+from .models import UserProfile, DailySearchTracker, EmailVerificationCode, DownloadRecord, SiteSettings
+
+
+@admin.register(SiteSettings)
+class SiteSettingsAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'guest_daily_limit', 'free_daily_limit', 'updated_at')
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
