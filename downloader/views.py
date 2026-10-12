@@ -17,6 +17,8 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.html import escape
+from django.core import signing
+from django.utils.http import content_disposition_header
 from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.core.cache import cache
 from django.core.mail import send_mail, EmailMultiAlternatives
@@ -37,7 +39,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from .models import DownloadRecord, UserProfile, DailySearchTracker, EmailVerificationCode
-from .services import YtDlpService, FileDownloadService, ImageConverterService, cleanup_old_downloads
+from .services import YtDlpService, FileDownloadService, ImageConverterService, GoogleDriveService, cleanup_old_downloads
 
 
 import json
@@ -346,6 +348,10 @@ def api_inspect(request):
     if result.get('status') == 'error':
         return Response({'error': result.get('error')}, status=status.HTTP_400_BAD_REQUEST)
 
+    # Google Drive/Docs files are handed out as our own signed links instead of raw Google URLs.
+    for f in result.get('files') or []:
+        f['download_url'] = make_gdrive_link(request, f['download_url'], f.get('filename') or 'nexusdown_file')
+
     # Increment search count upon successful inspect
     tracker = status_info['tracker']
     tracker.search_count += 1
@@ -378,8 +384,8 @@ def api_inspect(request):
             client_ip=client_ip,
             title=result.get('title', 'Extracted Media'),
             original_url=url,
-            media_type='video' if result.get('video_formats') else 'audio',
-            format_label=f"{len(result.get('video_formats', []))} Links",
+            media_type='file' if result.get('files') else ('video' if result.get('video_formats') else 'audio'),
+            format_label=f"{len(result.get('files') or result.get('video_formats', []))} Links",
             status='completed',
             **record_owner_fields(request),
         )
@@ -441,6 +447,63 @@ def _purge_stale_downloads():
     """Drop old server-side copies, at most once every 10 minutes per process."""
     if cache.add('downloads_cleanup_ran', 1, 600):
         cleanup_old_downloads(settings.DOWNLOADS_DIR, settings.DOWNLOAD_RETENTION_HOURS * 3600)
+
+
+GDRIVE_LINK_SALT = 'nexusdown.gdrive-link'
+GDRIVE_ALLOWED_HOSTS = ('docs.google.com', 'drive.usercontent.google.com', 'drive.google.com')
+
+
+def make_gdrive_link(request, google_url, filename):
+    """Our own expiring, signed URL for a Google file, so the link lives on this site's domain."""
+    token = signing.dumps({'u': google_url, 'n': filename}, salt=GDRIVE_LINK_SALT, compress=True)
+    return request.build_absolute_uri(reverse('downloader:gdrive_download', args=[token]))
+
+
+def gdrive_download_view(request, token):
+    """Stream a Google Drive/Docs file for a link we signed in api_inspect (see make_gdrive_link)."""
+    try:
+        payload = signing.loads(token, salt=GDRIVE_LINK_SALT, max_age=settings.GDRIVE_LINK_MAX_AGE)
+        google_url, filename = payload['u'], payload['n']
+    except (signing.BadSignature, KeyError, TypeError):
+        return HttpResponse("Havola yaroqsiz yoki muddati tugagan. Saytda qayta qidiring.", status=410, content_type='text/plain; charset=utf-8')
+
+    # The signature already proves we issued this URL; the host check is defence in depth.
+    if (urlparse(google_url).hostname or '').lower() not in GDRIVE_ALLOWED_HOSTS:
+        raise Http404("Yaroqsiz havola.")
+    if _throttled(request, 'dl', settings.DOWNLOADS_PER_HOUR_GUEST, settings.DOWNLOADS_PER_HOUR_USER):
+        return HttpResponse("Juda ko'p yuklash so'rovi yuborildi. Bir ozdan keyin qayta urinib ko'ring.", status=429, content_type='text/plain; charset=utf-8')
+
+    try:
+        upstream = safe_stream_get(google_url, {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
+    except Exception:
+        return HttpResponse("Google bilan bog'lanib bo'lmadi. Keyinroq qayta urinib ko'ring.", status=502, content_type='text/plain; charset=utf-8')
+
+    content_type = upstream.headers.get('Content-Type', 'application/octet-stream')
+    length = upstream.headers.get('Content-Length', '')
+    final_host = (urlparse(upstream.url).hostname or '').lower()
+    if upstream.status_code != 200 or final_host == 'accounts.google.com' or content_type.startswith('text/html'):
+        upstream.close()
+        return HttpResponse(GoogleDriveService.PRIVATE_MSG, status=404, content_type='text/plain; charset=utf-8')
+    if length.isdigit() and int(length) > settings.GDRIVE_MAX_DOWNLOAD_MB * 1024 * 1024:
+        upstream.close()
+        return HttpResponse(f"Fayl juda katta (>{settings.GDRIVE_MAX_DOWNLOAD_MB} MB). Uni Google Drive'ning o'zidan yuklab oling.",
+                            status=413, content_type='text/plain; charset=utf-8')
+
+    def body():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response = StreamingHttpResponse(body(), content_type=content_type)
+    response['Content-Disposition'] = content_disposition_header(True, filename)
+    if length.isdigit():
+        response['Content-Length'] = length
+    response['X-Content-Type-Options'] = 'nosniff'
+    response['Cache-Control'] = 'private, no-store'
+    return response
 
 
 def api_download_media_stream(request):

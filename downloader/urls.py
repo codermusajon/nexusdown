@@ -10,6 +10,7 @@ urlpatterns = [
     path('signup/', views.signup_view, name='signup'),
     path('admin-dashboard/', views.admin_dashboard_view, name='admin_dashboard'),
     path('download/<str:record_id>/', views.download_file_view, name='download_file'),
+    path('g/<str:token>/', views.gdrive_download_view, name='gdrive_download'),
     path('api/inspect/', views.api_inspect, name='api_inspect'),
     path('api/download-media/', views.api_download_media_stream, name='api_download_media_stream'),
     path('api/history/', views.api_history, name='api_history'),

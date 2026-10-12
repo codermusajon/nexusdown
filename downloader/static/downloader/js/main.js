@@ -52,9 +52,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const mediaTitle = document.getElementById('mediaTitle');
   const mediaAuthor = document.getElementById('mediaAuthor');
   const formatOptionsGrid = document.getElementById('formatOptionsGrid');
+  const formatGroupLabel = document.getElementById('formatGroupLabel');
   const btnTriggerDownload = document.getElementById('btnTriggerDownload');
 
-  const DEFAULT_PLACEHOLDER_SVG = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="%230f172a"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%2300f2fe" font-family="sans-serif" font-weight="bold" font-size="16">NexusDown Media</text></svg>';
+  const DOCUMENT_PLACEHOLDER_SVG = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="%230f172a"/><path d="M130 40h42l28 28v72a6 6 0 0 1-6 6h-64a6 6 0 0 1-6-6V46a6 6 0 0 1 6-6z" fill="none" stroke="%2300f2fe" stroke-width="4"/><path d="M172 40v28h28M142 96h44M142 112h44M142 128h28" fill="none" stroke="%2300f2fe" stroke-width="4" stroke-linecap="round"/></svg>';
+  const DEFAULT_PLACEHOLDER_SVG ='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180" viewBox="0 0 320 180"><rect width="320" height="180" fill="%230f172a"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="%2300f2fe" font-family="sans-serif" font-weight="bold" font-size="16">NexusDown Media</text></svg>';
 
   let isAudioSyncActive = false;
 
@@ -281,7 +283,7 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        if (data.error || data.status === 'error' || (!data.video_formats?.length && !data.audio_url && !data.fallback_url)) {
+        if (data.error || data.status === 'error' || (!data.video_formats?.length && !data.files?.length && !data.audio_url && !data.fallback_url)) {
           resetInspectionState();
           showToast(data.error || 'Manzil bo\'yicha media topilmadi.', 'error');
           return;
@@ -337,7 +339,52 @@ document.addEventListener('DOMContentLoaded', () => {
   const photoGalleryCount = document.getElementById('photoGalleryCount');
 
   // Render Inspected Media Details & Direct Stream Links
+  // Google Drive / Docs results: plain downloadable files, no player.
+  function renderFileInspection(data) {
+    if (mediaTitle) mediaTitle.textContent = data.title;
+    if (mediaAuthor) mediaAuthor.textContent = data.uploader || '';
+    if (mediaDuration) mediaDuration.style.display = 'none';
+    if (mediaVideoPlayer) { mediaVideoPlayer.pause(); mediaVideoPlayer.style.display = 'none'; }
+    if (mediaYoutubePlayer) mediaYoutubePlayer.style.display = 'none';
+    if (btnPlayMediaVideo) btnPlayMediaVideo.style.display = 'none';
+    if (activeQualityIndicator) activeQualityIndicator.style.display = 'none';
+    if (photoGallerySection) photoGallerySection.style.display = 'none';
+    if (mediaThumbnail) {
+      mediaThumbnail.style.display = 'block';
+      mediaThumbnail.style.opacity = '1';
+      mediaThumbnail.src = DOCUMENT_PLACEHOLDER_SVG;
+    }
+    if (formatGroupLabel) formatGroupLabel.textContent = '📄 Formatni tanlang:';
+
+    selectedFormatId = null;
+    if (formatOptionsGrid) formatOptionsGrid.innerHTML = '';
+
+    data.files.forEach((file, index) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'format-option-btn';
+      btn.textContent = file.label + (file.filesize_mb ? ` (~${file.filesize_mb} MB)` : '');
+      btn.setAttribute('data-id', file.format_id);
+      btn.setAttribute('data-type', 'file');
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.format-option-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        selectedFormatId = file.format_id;
+        updateDirectLink(file.download_url, file.label, file.format_id);
+      });
+      if (formatOptionsGrid) formatOptionsGrid.appendChild(btn);
+      if (index === 0) btn.click();
+    });
+
+    if (mediaPreviewCard) mediaPreviewCard.style.display = 'block';
+  }
+
   function renderMediaInspection(data) {
+    if (data.files && data.files.length) {
+      renderFileInspection(data);
+      return;
+    }
+    if (formatGroupLabel) formatGroupLabel.textContent = "🎬 Sifatni Tanlang & Ko'rish:";
     if (mediaTitle) mediaTitle.textContent = data.title;
     if (mediaAuthor) mediaAuthor.textContent = `Uploaded by ${data.uploader}`;
     if (mediaDuration) mediaDuration.textContent = data.duration_str;

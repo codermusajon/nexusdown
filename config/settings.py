@@ -169,7 +169,10 @@ DOWNLOAD_RETENTION_HOURS = float(os.environ.get('DOWNLOAD_RETENTION_HOURS', 24))
 # Per-hour caps on the unauthenticated-friendly download/convert endpoints (per IP for guests, per user otherwise).
 DOWNLOADS_PER_HOUR_GUEST = int(os.environ.get('DOWNLOADS_PER_HOUR_GUEST', 20))
 DOWNLOADS_PER_HOUR_USER = int(os.environ.get('DOWNLOADS_PER_HOUR_USER', 60))
-CONVERSIONS_PER_HOUR_GUEST = int(os.environ.get('CONVERSIONS_PER_HOUR_GUEST', 10))
+# Google Drive/Docs files are served through our own signed links (/g/<token>/) that expire after this long.
+GDRIVE_LINK_MAX_AGE = int(os.environ.get('GDRIVE_LINK_MAX_AGE', 6 * 60 * 60))
+GDRIVE_MAX_DOWNLOAD_MB = int(os.environ.get('GDRIVE_MAX_DOWNLOAD_MB', 300))
+CONVERSIONS_PER_HOUR_GUEST =int(os.environ.get('CONVERSIONS_PER_HOUR_GUEST', 10))
 CONVERSIONS_PER_HOUR_USER = int(os.environ.get('CONVERSIONS_PER_HOUR_USER', 30))
 
 # Google Authentication Configuration

@@ -6,7 +6,7 @@ import re
 import html
 import requests
 from pathlib import Path
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, parse_qs
 from PIL import Image
 import img2pdf
 import yt_dlp
@@ -308,6 +308,10 @@ class YtDlpService:
     @staticmethod
     def inspect_url(url):
         """Extract metadata and direct media stream links for videos, audio, and photo carousels."""
+        google_link = GoogleDriveService.parse(url)
+        if google_link:
+            return GoogleDriveService.inspect(google_link)
+
         url = YtDlpService._unshorten_url(url)
         
         # Immediate fallback check for TikTok URLs to bypass regional ISP restrictions
@@ -778,6 +782,152 @@ def cleanup_old_downloads(directory, max_age_seconds):
         except OSError:
             continue
     return removed
+
+
+class GoogleDriveService:
+    """Turns public Google Drive / Docs links into direct download links.
+
+    The links point straight at Google, so the visitor's browser downloads the file and
+    this server never proxies it. Only the file/document id is taken from the user's URL
+    (and validated), never a host, so nothing user-controlled is fetched.
+    """
+
+    ID_RE = re.compile(r'^[A-Za-z0-9_-]{10,200}$')
+    DOC_PATH_RE = re.compile(r'^/(document|spreadsheets|presentation)/(?:u/\d+/)?d/([^/]+)')
+    FILE_PATH_RE = re.compile(r'^/file/(?:u/\d+/)?d/([^/]+)')
+    # (export format, label, extension) per Google Docs editor.
+    DOC_EXPORTS = {
+        'document': [('pdf', 'PDF', 'pdf'), ('docx', 'Word (DOCX)', 'docx'), ('txt', 'Oddiy matn (TXT)', 'txt')],
+        'spreadsheets': [('xlsx', 'Excel (XLSX)', 'xlsx'), ('pdf', 'PDF', 'pdf'), ('csv', 'CSV (birinchi varaq)', 'csv')],
+        'presentation': [('pptx', 'PowerPoint (PPTX)', 'pptx'), ('pdf', 'PDF', 'pdf')],
+    }
+    DOC_KIND_NAMES = {'document': 'Google Hujjat', 'spreadsheets': 'Google Jadval', 'presentation': 'Google Taqdimot'}
+    PRIVATE_MSG = ("Fayl ochiq emas yoki topilmadi. Google Drive'da 'Ulashish' → 'Havolasi bor har kim' "
+                   "(Ko'rish huquqi) qilib qo'yib, qayta urinib ko'ring.")
+
+    @staticmethod
+    def parse(url):
+        """Return {'kind': 'file'|'doc'|'folder'|'unsupported', ...} for a Google link, or None for any other host."""
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or '').lower()
+        except ValueError:
+            return None
+        if host not in ('drive.google.com', 'docs.google.com'):
+            return None
+
+        path, query = parsed.path, parse_qs(parsed.query)
+        m = GoogleDriveService.DOC_PATH_RE.match(path)
+        if m and host == 'docs.google.com':
+            if GoogleDriveService.ID_RE.match(m.group(2)):
+                return {'kind': 'doc', 'doc_type': m.group(1), 'id': m.group(2)}
+            return {'kind': 'unsupported'}  # e.g. /d/e/2PACX... "published to web" links
+
+        m = GoogleDriveService.FILE_PATH_RE.match(path)
+        file_id = m.group(1) if m else (query.get('id') or [''])[0] if path in ('/open', '/uc') else ''
+        if file_id:
+            return {'kind': 'file', 'id': file_id} if GoogleDriveService.ID_RE.match(file_id) else {'kind': 'unsupported'}
+        if '/folders/' in path:
+            return {'kind': 'folder'}
+        return {'kind': 'unsupported'}
+
+    @staticmethod
+    def file_url(file_id):
+        return f"https://drive.usercontent.google.com/download?id={file_id}&export=download&confirm=t"
+
+    @staticmethod
+    def export_url(doc_type, doc_id, fmt):
+        return f"https://docs.google.com/{doc_type}/d/{doc_id}/export?format={fmt}"
+
+    @staticmethod
+    def _probe(url):
+        """Ask Google for the headers only. Returns ('public'|'private'|'unknown', filename, size_bytes)."""
+        try:
+            resp = requests.get(
+                url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+                stream=True, timeout=8, verify=SSL_VERIFY,
+            )
+        except requests.RequestException:
+            return 'unknown', None, None  # e.g. host can't reach Google; the links may still work for the visitor
+        try:
+            final_host = (urlparse(resp.url).hostname or '').lower()
+            if final_host == 'accounts.google.com' or resp.status_code in (401, 403, 404):
+                return 'private', None, None
+            if resp.status_code != 200:
+                return 'unknown', None, None
+            filename = None
+            disposition = resp.headers.get('Content-Disposition', '')
+            m = re.search(r"filename\*=(?:UTF-8|utf-8)''([^;]+)", disposition)
+            if m:
+                filename = unquote(m.group(1))
+            else:
+                m = re.search(r'filename=["\']?([^"\';]+)', disposition)
+                if m:
+                    filename = m.group(1)
+            size = resp.headers.get('Content-Length')
+            return 'public', filename, int(size) if size and size.isdigit() else None
+        finally:
+            resp.close()
+
+    @staticmethod
+    def inspect(parsed):
+        kind = parsed['kind']
+        if kind == 'folder':
+            return {'status': 'error', 'error': "Google Drive papkalarini yuklab bo'lmaydi. Papka ichidagi alohida faylning havolasini kiriting."}
+        if kind == 'unsupported':
+            return {'status': 'error', 'error': "Bu Google havolasi qo'llab-quvvatlanmaydi. Fayl yoki hujjatning oddiy 'Ulashish' havolasini kiriting."}
+
+        if kind == 'file':
+            link = GoogleDriveService.file_url(parsed['id'])
+            state, filename, size = GoogleDriveService._probe(link)
+            if state == 'private':
+                return {'status': 'error', 'error': GoogleDriveService.PRIVATE_MSG}
+            title = filename or 'Google Drive fayli'
+            ext = os.path.splitext(title)[1].lstrip('.').lower() or 'fayl'
+            files = [{
+                'format_id': 'gdrive_file',
+                'label': f"Asl faylni yuklab olish ({ext.upper()})" if ext != 'fayl' else 'Asl faylni yuklab olish',
+                'ext': ext,
+                'download_url': link,
+                'filename': title,
+                'filesize_mb': round(size / (1024 * 1024), 1) if size else None,
+            }]
+            uploader = 'Google Drive'
+        else:
+            doc_type, doc_id = parsed['doc_type'], parsed['id']
+            exports = GoogleDriveService.DOC_EXPORTS[doc_type]
+            state, filename, _ = GoogleDriveService._probe(GoogleDriveService.export_url(doc_type, doc_id, exports[0][0]))
+            if state == 'private':
+                return {'status': 'error', 'error': GoogleDriveService.PRIVATE_MSG}
+            title = os.path.splitext(filename)[0] if filename else GoogleDriveService.DOC_KIND_NAMES[doc_type]
+            # An uploaded Word/Excel file keeps its old extension in the name; don't produce "x.docx.pdf".
+            base_name = re.sub(r'\.(docx?|xlsx?|pptx?|odt|ods|odp|pdf|txt|csv)$', '', title, flags=re.IGNORECASE)
+            files = [{
+                'format_id': f'gdoc_{fmt}',
+                'label': label,
+                'ext': ext,
+                'download_url': GoogleDriveService.export_url(doc_type, doc_id, fmt),
+                'filename': f'{base_name}.{ext}',
+                'filesize_mb': None,
+            } for fmt, label, ext in exports]
+            uploader = GoogleDriveService.DOC_KIND_NAMES[doc_type]
+
+        return {
+            'status': 'success',
+            'title': title,
+            'thumbnail': '',
+            'duration': 0,
+            'duration_str': '',
+            'uploader': uploader,
+            'video_formats': [],
+            'audio_url': '',
+            'fallback_url': '',
+            'files': files,
+            'original_url': '',
+            'youtube_id': None,
+            'embed_url': None,
+        }
 
 
 class FileDownloadService:

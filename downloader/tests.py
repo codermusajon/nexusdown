@@ -1150,3 +1150,219 @@ class DownloadThrottleAndCleanupTests(TestCase):
             self.assertFalse(os.path.exists(old))
             self.assertTrue(os.path.exists(fresh))
         self.assertEqual(cleanup_old_downloads('/nonexistent-dir-xyz', 3600), 0)
+
+
+class GoogleDriveServiceTests(SimpleTestCase):
+    FILE_ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz012345'
+
+    def test_parse_recognises_drive_and_docs_links(self):
+        from .services import GoogleDriveService as G
+        fid = self.FILE_ID
+        self.assertEqual(G.parse(f'https://drive.google.com/file/d/{fid}/view?usp=sharing'), {'kind': 'file', 'id': fid})
+        self.assertEqual(G.parse(f'https://drive.google.com/file/u/0/d/{fid}/view'), {'kind': 'file', 'id': fid})
+        self.assertEqual(G.parse(f'https://drive.google.com/open?id={fid}'), {'kind': 'file', 'id': fid})
+        self.assertEqual(G.parse(f'https://drive.google.com/uc?export=download&id={fid}'), {'kind': 'file', 'id': fid})
+        self.assertEqual(G.parse(f'https://docs.google.com/document/d/{fid}/edit?usp=sharing'),
+                         {'kind': 'doc', 'doc_type': 'document', 'id': fid})
+        self.assertEqual(G.parse(f'https://docs.google.com/spreadsheets/u/1/d/{fid}/edit#gid=0')['doc_type'], 'spreadsheets')
+        self.assertEqual(G.parse(f'https://docs.google.com/presentation/d/{fid}/edit')['doc_type'], 'presentation')
+        self.assertEqual(G.parse(f'https://drive.google.com/drive/folders/{fid}')['kind'], 'folder')
+        self.assertEqual(G.parse('https://docs.google.com/document/d/e/2PACX-1vAbCdEf/pub')['kind'], 'unsupported')
+        self.assertEqual(G.parse('https://drive.google.com/')['kind'], 'unsupported')
+
+    def test_parse_ignores_other_and_lookalike_hosts(self):
+        from .services import GoogleDriveService as G
+        self.assertIsNone(G.parse('https://www.youtube.com/watch?v=abc'))
+        self.assertIsNone(G.parse(f'https://drive.google.com.evil.example/file/d/{self.FILE_ID}/view'))
+        self.assertIsNone(G.parse(f'https://evil.example/drive.google.com/file/d/{self.FILE_ID}/view'))
+        self.assertIsNone(G.parse('not a url'))
+
+    def test_bad_id_is_rejected_not_interpolated(self):
+        from .services import GoogleDriveService as G
+        self.assertEqual(G.parse('https://drive.google.com/file/d/x%2F..%2Fy/view')['kind'], 'unsupported')
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('public', 'Report 2026.pdf', 5 * 1024 * 1024))
+    def test_public_file_gets_direct_google_link(self, _probe):
+        from .services import GoogleDriveService as G
+        result = G.inspect({'kind': 'file', 'id': self.FILE_ID})
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['title'], 'Report 2026.pdf')
+        self.assertEqual(result['video_formats'], [])
+        self.assertEqual(result['files'][0]['download_url'],
+                         f'https://drive.usercontent.google.com/download?id={self.FILE_ID}&export=download&confirm=t')
+        self.assertEqual(result['files'][0]['filesize_mb'], 5.0)
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('public', 'Hisobot.pdf', None))
+    def test_google_doc_offers_several_export_formats(self, _probe):
+        from .services import GoogleDriveService as G
+        result = G.inspect({'kind': 'doc', 'doc_type': 'document', 'id': self.FILE_ID})
+        self.assertEqual(result['title'], 'Hisobot')
+        self.assertEqual([f['ext'] for f in result['files']], ['pdf', 'docx', 'txt'])
+        self.assertEqual(result['files'][1]['download_url'],
+                         f'https://docs.google.com/document/d/{self.FILE_ID}/export?format=docx')
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('private', None, None))
+    def test_private_file_returns_sharing_hint(self, _probe):
+        from .services import GoogleDriveService as G
+        result = G.inspect({'kind': 'file', 'id': self.FILE_ID})
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('Havolasi bor har kim', result['error'])
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('unknown', None, None))
+    def test_unreachable_google_still_returns_links(self, _probe):
+        from .services import GoogleDriveService as G
+        result = G.inspect({'kind': 'doc', 'doc_type': 'spreadsheets', 'id': self.FILE_ID})
+        self.assertEqual(result['status'], 'success')
+        self.assertEqual(result['title'], 'Google Jadval')
+
+    def test_folder_is_rejected(self):
+        from .services import GoogleDriveService as G
+        self.assertEqual(G.inspect({'kind': 'folder'})['status'], 'error')
+
+    def test_probe_classifies_responses(self):
+        from .services import GoogleDriveService as G
+
+        class Resp:
+            def __init__(self, status, url='https://docs.google.com/x', headers=None):
+                self.status_code, self.url, self.headers = status, url, headers or {}
+
+            def close(self):
+                pass
+
+        disposition = 'attachment; filename="a.pdf"; filename*=UTF-8\'\'Hisobot%20%C5%A1.pdf'
+        with patch('downloader.services.requests.get', return_value=Resp(200, headers={
+                'Content-Disposition': disposition, 'Content-Length': '2048'})):
+            self.assertEqual(G._probe('https://x'), ('public', 'Hisobot š.pdf', 2048))
+        with patch('downloader.services.requests.get', return_value=Resp(200, url='https://accounts.google.com/ServiceLogin')):
+            self.assertEqual(G._probe('https://x')[0], 'private')
+        with patch('downloader.services.requests.get', return_value=Resp(404)):
+            self.assertEqual(G._probe('https://x')[0], 'private')
+        with patch('downloader.services.requests.get', return_value=Resp(500)):
+            self.assertEqual(G._probe('https://x')[0], 'unknown')
+        import requests as _requests
+        with patch('downloader.services.requests.get', side_effect=_requests.ConnectionError('blocked')):
+            self.assertEqual(G._probe('https://x')[0], 'unknown')
+
+
+class InspectGoogleDriveEndpointTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('public', 'Doc.pdf', None))
+    def test_inspect_returns_files_and_logs_a_file_record(self, _probe):
+        response = self.client.post(
+            reverse('downloader:api_inspect'),
+            {'url': 'https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345/view'},
+            content_type='application/json',
+            HTTP_X_USER_ID='usr_testguest_123456',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['files'][0]['format_id'], 'gdrive_file')
+        record = DownloadRecord.objects.get()
+        self.assertEqual(record.media_type, 'file')
+        self.assertEqual(record.format_label, '1 Links')
+
+
+class GoogleDriveSignedLinkTests(TestCase):
+    FILE_ID = '1AbCdEfGhIjKlMnOpQrStUvWxYz012345'
+
+    def setUp(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    class _Upstream:
+        def __init__(self, status=200, content_type='application/pdf', length='6', url='https://doc-0.googleusercontent.com/x', chunks=(b'abc', b'def')):
+            self.status_code, self.url = status, url
+            self.headers = {'Content-Type': content_type}
+            if length is not None:
+                self.headers['Content-Length'] = length
+            self._chunks, self.closed = chunks, False
+
+        def iter_content(self, chunk_size=0):
+            return iter(self._chunks)
+
+        def close(self):
+            self.closed = True
+
+    def _token(self, url=None, name='Hisobot.pdf'):
+        from django.core import signing
+        url = url or f'https://docs.google.com/document/d/{self.FILE_ID}/export?format=pdf'
+        return signing.dumps({'u': url, 'n': name}, salt=downloader_views.GDRIVE_LINK_SALT, compress=True)
+
+    def _get(self, token):
+        return self.client.get(reverse('downloader:gdrive_download', args=[token]))
+
+    @patch('downloader.views.safe_stream_get')
+    def test_valid_link_streams_file_with_attachment_name(self, mock_get):
+        mock_get.return_value = self._Upstream()
+        response = self._get(self._token())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(b''.join(response.streaming_content), b'abcdef')
+        self.assertIn('attachment', response['Content-Disposition'])
+        self.assertIn('Hisobot.pdf', response['Content-Disposition'])
+        self.assertEqual(response['Content-Length'], '6')
+        self.assertTrue(mock_get.return_value.closed)
+
+    def test_tampered_token_is_rejected(self):
+        token = self._token()
+        response = self._get(token[:-3] + ('AAA' if not token.endswith('AAA') else 'BBB'))
+        self.assertEqual(response.status_code, 410)
+
+    @override_settings(GDRIVE_LINK_MAX_AGE=0)
+    def test_expired_link_is_rejected(self):
+        import time
+        token = self._token()
+        time.sleep(1.1)
+        self.assertEqual(self._get(token).status_code, 410)
+
+    @patch('downloader.views.safe_stream_get')
+    def test_signed_link_cannot_point_at_other_hosts(self, mock_get):
+        response = self._get(self._token(url='https://evil.example/export?format=pdf'))
+        self.assertEqual(response.status_code, 404)
+        mock_get.assert_not_called()
+
+    @patch('downloader.views.safe_stream_get')
+    def test_private_or_html_upstream_returns_sharing_hint(self, mock_get):
+        mock_get.return_value = self._Upstream(status=200, content_type='text/html; charset=utf-8')
+        response = self._get(self._token())
+        self.assertEqual(response.status_code, 404)
+        self.assertIn('Havolasi bor har kim', response.content.decode('utf-8'))
+        mock_get.return_value = self._Upstream(status=200, url='https://accounts.google.com/ServiceLogin')
+        self.assertEqual(self._get(self._token()).status_code, 404)
+
+    @override_settings(GDRIVE_MAX_DOWNLOAD_MB=1)
+    @patch('downloader.views.safe_stream_get')
+    def test_oversized_file_is_refused(self, mock_get):
+        mock_get.return_value = self._Upstream(length=str(5 * 1024 * 1024))
+        self.assertEqual(self._get(self._token()).status_code, 413)
+
+    @patch('downloader.views.safe_stream_get', side_effect=ValueError('boom'))
+    def test_upstream_failure_is_a_502(self, _mock):
+        self.assertEqual(self._get(self._token()).status_code, 502)
+
+    @override_settings(DOWNLOADS_PER_HOUR_GUEST=1)
+    @patch('downloader.views.safe_stream_get')
+    def test_signed_links_share_the_download_rate_limit(self, mock_get):
+        mock_get.return_value = self._Upstream()
+        self.assertEqual(self._get(self._token()).status_code, 200)
+        self.assertEqual(self._get(self._token()).status_code, 429)
+
+    @patch('downloader.services.GoogleDriveService._probe', return_value=('public', 'VAHOBOV ISMOIL.docx.pdf', None))
+    def test_inspect_hands_out_links_on_our_own_domain(self, _probe):
+        response = self.client.post(
+            reverse('downloader:api_inspect'),
+            {'url': f'https://docs.google.com/document/d/{self.FILE_ID}/edit?usp=sharing'},
+            content_type='application/json',
+            HTTP_X_USER_ID='usr_testguest_123456',
+        )
+        self.assertEqual(response.status_code, 200)
+        files = response.json()['files']
+        self.assertEqual([f['ext'] for f in files], ['pdf', 'docx', 'txt'])
+        for f in files:
+            self.assertTrue(f['download_url'].startswith('http://testserver/g/'), f['download_url'])
+            self.assertNotIn('google.com', f['download_url'])
+        from django.core import signing
+        payload = signing.loads(files[1]['download_url'].rsplit('/g/', 1)[1].strip('/'), salt=downloader_views.GDRIVE_LINK_SALT)
+        self.assertEqual(payload['u'], f'https://docs.google.com/document/d/{self.FILE_ID}/export?format=docx')
+        self.assertEqual(payload['n'], 'VAHOBOV ISMOIL.docx')
